@@ -19,34 +19,31 @@ import org.slf4j.LoggerFactory;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
+import java.util.concurrent.TimeUnit;
 
 /**
- * NetworkBase provides the foundation for all network communication in the Raft system.
- * It handles:
- * - Starting a server to receive messages from other nodes
- * - Connecting to other nodes as a client
- * - Routing incoming messages to registered handlers
- * - Managing persistent connections to peers
- *
- * This is used by both election and heartbeat features.
+ * NetworkBase provides the foundation for all network communication in the Raft
+ * system. It handles server startup, outbound connects, routing incoming
+ * messages to registered handlers, and maintaining peer channels.
  */
 public class NetworkBase {
     private static final Logger logger = LoggerFactory.getLogger(NetworkBase.class);
 
-    // Netty event loop groups for async I/O
-    private final EventLoopGroup bossGroup;      // Accepts incoming connections
-    private final EventLoopGroup workerGroup;    // Handles I/O operations
+    private final EventLoopGroup bossGroup;
+    private final EventLoopGroup workerGroup;
 
     private final String nodeId;
     private final int port;
 
-    // Channels for communicating with other nodes (key: nodeId, value: channel)
+    // Map peerId -> Channel (active channel to that peer)
     private final Map<String, Channel> peerChannels = new ConcurrentHashMap<>();
 
-    // Message handlers registered by features (election, heartbeat, etc.)
+    // Registered message handlers
     private final Map<Message.MessageType, Consumer<Message>> messageHandlers = new ConcurrentHashMap<>();
 
-    // Server channel that listens for incoming connections
+    // bounded reconnect attempts per peer
+    private final Map<String, Integer> connectRetries = new ConcurrentHashMap<>();
+
     private Channel serverChannel;
 
     public NetworkBase(String nodeId, int port) {
@@ -54,13 +51,9 @@ public class NetworkBase {
         this.port = port;
         this.bossGroup = new NioEventLoopGroup(1);
         this.workerGroup = new NioEventLoopGroup();
-
         logger.info("NetworkBase initialized for node {} on port {}", nodeId, port);
     }
 
-    /**
-     * Start the network server to accept incoming connections from other nodes
-     */
     public void startServer() throws InterruptedException {
         ServerBootstrap serverBootstrap = new ServerBootstrap();
         serverBootstrap.group(bossGroup, workerGroup)
@@ -69,48 +62,34 @@ public class NetworkBase {
                     @Override
                     protected void initChannel(SocketChannel ch) {
                         ChannelPipeline pipeline = ch.pipeline();
-
-                        // Frame decoder: messages are prefixed with length (4 bytes)
                         pipeline.addLast(new LengthFieldBasedFrameDecoder(65536, 0, 4, 0, 4));
                         pipeline.addLast(new LengthFieldPrepender(4));
-
-                        // String encoding/decoding (JSON messages are strings)
                         pipeline.addLast(new StringDecoder(CharsetUtil.UTF_8));
                         pipeline.addLast(new StringEncoder(CharsetUtil.UTF_8));
-
-                        // Our custom handler for processing incoming messages
                         pipeline.addLast(new InboundMessageHandler());
                     }
                 })
                 .option(ChannelOption.SO_BACKLOG, 128)
                 .childOption(ChannelOption.SO_KEEPALIVE, true);
 
-        // Bind to the port and start accepting connections
         ChannelFuture future = serverBootstrap.bind(port).sync();
         serverChannel = future.channel();
-
         logger.info("Server started on port {} for node {}", port, nodeId);
     }
 
-    /**
-     * Connect to another node in the cluster
-     *
-     * @param peerId The ID of the peer node
-     * @param host The hostname/IP of the peer
-     * @param peerPort The port of the peer
-     */
     public void connectToPeer(String peerId, String host, int peerPort) {
-        // Don't connect to ourselves
-        if (peerId.equals(nodeId)) {
+        if (peerId.equals(nodeId))
             return;
-        }
 
-        // Check if already connected
-        if (peerChannels.containsKey(peerId) && peerChannels.get(peerId).isActive()) {
+        Channel existing = peerChannels.get(peerId);
+        if (existing != null && existing.isActive()) {
             logger.debug("Already connected to peer {}", peerId);
             return;
         }
+        attemptConnect(peerId, host, peerPort);
+    }
 
+    private void attemptConnect(String peerId, String host, int peerPort) {
         Bootstrap bootstrap = new Bootstrap();
         bootstrap.group(workerGroup)
                 .channel(NioSocketChannel.class)
@@ -118,8 +97,6 @@ public class NetworkBase {
                     @Override
                     protected void initChannel(SocketChannel ch) {
                         ChannelPipeline pipeline = ch.pipeline();
-
-                        // Same pipeline as server
                         pipeline.addLast(new LengthFieldBasedFrameDecoder(65536, 0, 4, 0, 4));
                         pipeline.addLast(new LengthFieldPrepender(4));
                         pipeline.addLast(new StringDecoder(CharsetUtil.UTF_8));
@@ -128,38 +105,45 @@ public class NetworkBase {
                     }
                 });
 
-        // Connect asynchronously
         bootstrap.connect(host, peerPort).addListener((ChannelFutureListener) future -> {
             if (future.isSuccess()) {
                 Channel channel = future.channel();
                 peerChannels.put(peerId, channel);
+                connectRetries.remove(peerId);
                 logger.info("Connected to peer {} at {}:{}", peerId, host, peerPort);
 
-                // Handle channel closure
+                // on close remove only if the same channel is registered
                 channel.closeFuture().addListener(closeFuture -> {
-                    peerChannels.remove(peerId);
-                    logger.warn("Connection to peer {} closed", peerId);
+                    if (peerChannels.get(peerId) == channel) {
+                        peerChannels.remove(peerId);
+                        logger.warn("Outbound connection to peer {} closed", peerId);
+                    }
                 });
             } else {
-                logger.error("Failed to connect to peer {} at {}:{}", peerId, host, peerPort, future.cause());
+                int attempt = connectRetries.getOrDefault(peerId, 0) + 1;
+                connectRetries.put(peerId, attempt);
+                if (attempt <= 10) {
+                    long delayMs = 200L;
+                    logger.warn("Failed to connect to peer {} at {}:{} (attempt {}/10). Retrying in {} ms",
+                            peerId, host, peerPort, attempt, delayMs);
+                    workerGroup.schedule(
+                            () -> attemptConnect(peerId, host, peerPort),
+                            delayMs,
+                            TimeUnit.MILLISECONDS);
+                } else {
+                    logger.error("Giving up on connecting to peer {} at {}:{} after {} attempts",
+                            peerId, host, peerPort, attempt);
+                }
             }
         });
     }
 
-    /**
-     * Send a message to a specific peer
-     *
-     * @param peerId The ID of the peer to send to
-     * @param message The message to send
-     */
     public void sendMessage(String peerId, Message message) {
         Channel channel = peerChannels.get(peerId);
-
         if (channel == null || !channel.isActive()) {
             logger.warn("No active connection to peer {}, cannot send message", peerId);
             return;
         }
-
         try {
             String jsonMessage = MessageSerializer.serialize(message);
             channel.writeAndFlush(jsonMessage).addListener((ChannelFutureListener) future -> {
@@ -174,38 +158,20 @@ public class NetworkBase {
         }
     }
 
-    /**
-     * Broadcast a message to all connected peers
-     *
-     * @param message The message to broadcast
-     */
     public void broadcastMessage(Message message) {
         logger.debug("Broadcasting {} to {} peers", message.getType(), peerChannels.size());
-
         for (String peerId : peerChannels.keySet()) {
             sendMessage(peerId, message);
         }
     }
 
-    /**
-     * Register a handler for a specific message type
-     * This is how the election and heartbeat features register their handlers
-     *
-     * @param messageType The type of message to handle
-     * @param handler The handler function
-     */
     public void registerMessageHandler(Message.MessageType messageType, Consumer<Message> handler) {
         messageHandlers.put(messageType, handler);
         logger.info("Registered handler for message type: {}", messageType);
     }
 
-    /**
-     * Shutdown the network layer gracefully
-     */
     public void shutdown() {
         logger.info("Shutting down NetworkBase for node {}", nodeId);
-
-        // Close all peer connections
         for (Channel channel : peerChannels.values()) {
             if (channel.isActive()) {
                 channel.close();
@@ -213,57 +179,66 @@ public class NetworkBase {
         }
         peerChannels.clear();
 
-        // Close server channel
         if (serverChannel != null) {
             serverChannel.close();
         }
 
-        // Shutdown event loop groups
         workerGroup.shutdownGracefully();
         bossGroup.shutdownGracefully();
 
         logger.info("NetworkBase shutdown complete");
     }
 
-    /**
-     * Get the number of active peer connections
-     */
     public int getActivePeerCount() {
-        return (int) peerChannels.values().stream()
-                .filter(Channel::isActive)
-                .count();
+        return (int) peerChannels.values().stream().filter(Channel::isActive).count();
     }
 
-    /**
-     * Check if connected to a specific peer
-     */
     public boolean isConnectedToPeer(String peerId) {
         Channel channel = peerChannels.get(peerId);
         return channel != null && channel.isActive();
     }
 
     /**
-     * Netty handler for processing incoming messages
-     * This routes messages to the appropriate handler based on message type
+     * Netty handler for incoming string messages (JSON string).
+     * Important: register inbound channel for senderId BEFORE invoking business
+     * handlers.
      */
     private class InboundMessageHandler extends SimpleChannelInboundHandler<String> {
 
         @Override
         protected void channelRead0(ChannelHandlerContext ctx, String jsonMessage) {
             try {
-                // Deserialize the JSON message
                 Message message = MessageSerializer.deserialize(jsonMessage);
-
                 logger.debug("Received {} from {}", message.getType(), message.getSenderId());
 
-                // Route to the appropriate handler
+                // Register inbound channel for sender immediately so subsequent sends work
+                String senderId = message.getSenderId();
+                if (senderId != null && !senderId.equals(nodeId)) {
+                    Channel inboundChannel = ctx.channel();
+                    Channel existingChannel = peerChannels.get(senderId);
+
+                    // register or replace inactive registration
+                    if (existingChannel == null || !existingChannel.isActive()) {
+                        peerChannels.put(senderId, inboundChannel);
+                        logger.info("Registered inbound connection from peer {} at {}", senderId,
+                                inboundChannel.remoteAddress());
+
+                        inboundChannel.closeFuture().addListener(cf -> {
+                            if (peerChannels.get(senderId) == inboundChannel) {
+                                peerChannels.remove(senderId);
+                                logger.warn("Inbound connection from peer {} closed", senderId);
+                            }
+                        });
+                    }
+                }
+
+                // Now dispatch message to registered handler
                 Consumer<Message> handler = messageHandlers.get(message.getType());
                 if (handler != null) {
                     handler.accept(message);
                 } else {
                     logger.warn("No handler registered for message type: {}", message.getType());
                 }
-
             } catch (Exception e) {
                 logger.error("Error processing incoming message", e);
             }

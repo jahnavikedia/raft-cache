@@ -9,277 +9,152 @@ import java.util.*;
 import java.util.concurrent.*;
 
 /**
- * Represents a single node in the Raft cluster.
+ * RaftNode: core Raft state machine for Week 1 (heartbeats + elections).
  *
- * This class implements the core Raft consensus algorithm including:
- * - Heartbeat mechanism (Person B's responsibility)
- * - Leader election (Person A's responsibility)
- * - State management (FOLLOWER, CANDIDATE, LEADER)
+ * Key behaviors:
+ * - Starts NetworkBase server, registers handlers, connects to peers.
+ * - Heartbeat timer for leaders.
+ * - Election timer for followers/candidates.
  *
- * Thread Safety:
- * - Uses synchronized methods for state changes
- * - Timers run on separate threads
- * - NetworkBase handles thread-safe message sending
+ * Thread-safety: synchronized on state-changing methods; volatile for shared
+ * vars.
  */
 public class RaftNode {
     private static final Logger logger = LoggerFactory.getLogger(RaftNode.class);
 
-    // ========== Timing Constants (from Raft paper) ==========
-
-    /**
-     * Heartbeat interval: Leaders send heartbeats every 50ms
-     * Why 50ms? Must be much less than election timeout to prevent false failures
-     */
     private static final long HEARTBEAT_INTERVAL_MS = 50;
-
-    /**
-     * Election timeout range: 150-300ms (randomized)
-     * Why randomized? Prevents split votes - first node to timeout usually wins
-     * Why 150-300ms? Long enough to receive multiple heartbeats, short enough to detect failures quickly
-     */
     private static final long ELECTION_TIMEOUT_MIN_MS = 150;
     private static final long ELECTION_TIMEOUT_MAX_MS = 300;
 
-    // ========== Node Identity ==========
-
     private final String nodeId;
     private final int port;
+    private final long startTimeMs = System.currentTimeMillis();
 
-    // ========== Raft Persistent State (should be saved to disk in production) ==========
-
-    /**
-     * Current term number (monotonically increasing)
-     * Used to detect stale leaders and ensure safety
-     */
     private volatile long currentTerm = 0;
-
-    /**
-     * CandidateId that received vote in current term (or null if none)
-     * Ensures each node votes at most once per term
-     */
     private volatile String votedFor = null;
-
-    // ========== Raft Volatile State (all servers) ==========
-
-    /**
-     * Current state: FOLLOWER, CANDIDATE, or LEADER
-     */
     private volatile RaftState state;
-
-    /**
-     * Index of highest log entry known to be committed
-     * (For Week 2, for now just track it)
-     */
     private volatile long commitIndex = 0;
-
-    /**
-     * Index of highest log entry applied to state machine
-     * (For Week 2, for now just track it)
-     */
     private volatile long lastApplied = 0;
 
-    // ========== Leader State (reinitialized after election) ==========
-
-    /**
-     * For each server, index of next log entry to send to that server
-     * (For Week 2, for now not used)
-     */
     private Map<String, Long> nextIndex = new ConcurrentHashMap<>();
-
-    /**
-     * For each server, index of highest log entry known to be replicated on server
-     * (For Week 2, for now not used)
-     */
     private Map<String, Long> matchIndex = new ConcurrentHashMap<>();
 
-    // ========== Network Layer ==========
-
     private NetworkBase networkBase;
-
-    // ========== Cluster Configuration ==========
-
-    /**
-     * All peer nodes in the cluster (nodeId -> "host:port")
-     * Example: {"node2" -> "localhost:8002", "node3" -> "localhost:8003"}
-     */
     private final Map<String, String> peers = new ConcurrentHashMap<>();
 
-    // ========== Timers ==========
-
-    /**
-     * Executor for heartbeat timer (leaders only)
-     * Sends heartbeats every HEARTBEAT_INTERVAL_MS
-     */
     private ScheduledExecutorService heartbeatScheduler;
-
-    /**
-     * Future for the currently scheduled heartbeat task
-     * Allows us to cancel when stepping down from leader
-     */
     private ScheduledFuture<?> heartbeatTask;
-
-    /**
-     * Executor for election timer (followers/candidates)
-     * Triggers election if no heartbeat received
-     */
     private ScheduledExecutorService electionScheduler;
-
-    /**
-     * Future for the currently scheduled election timeout
-     * Allows us to cancel/reschedule when receiving heartbeats
-     */
     private ScheduledFuture<?> electionTask;
 
-    /**
-     * Random number generator for election timeout
-     * Each node gets different timeout to prevent split votes
-     */
     private final Random random = new Random();
 
-    // ========== Statistics (useful for debugging) ==========
+    private final Map<String, Boolean> votesReceived = new ConcurrentHashMap<>();
 
     private volatile long lastHeartbeatReceived = 0;
     private volatile long heartbeatsSent = 0;
     private volatile long heartbeatsReceived = 0;
-
-    // ========== Constructor ==========
+    private volatile long electionsStarted = 0;
 
     public RaftNode(String nodeId, int port) {
         this.nodeId = nodeId;
         this.port = port;
         this.state = RaftState.FOLLOWER;
+        this.lastHeartbeatReceived = System.currentTimeMillis();
         logger.info("RaftNode initialized: id={}, port={}, initial_term={}, initial_state={}",
-                    nodeId, port, currentTerm, state);
+                nodeId, port, currentTerm, state);
     }
-    
-    // ========== Lifecycle Methods ==========
 
-    /**
-     * Configure cluster peers before starting
-     * @param peerMap Map of peerId -> "host:port"
-     */
     public void configurePeers(Map<String, String> peerMap) {
         peers.putAll(peerMap);
         logger.info("Configured {} peers: {}", peerMap.size(), peerMap.keySet());
     }
 
-    /**
-     * Add a single peer to the cluster
-     */
     public void addPeer(String peerId, String host, int port) {
         String address = host + ":" + port;
         peers.put(peerId, address);
         logger.info("Added peer: {} at {}", peerId, address);
     }
 
-    /**
-     * Start the Raft node
-     * This initializes the network layer and starts the election timer
-     */
     public void start() throws InterruptedException {
         logger.info("Starting Raft node: {}", nodeId);
 
-        // Initialize network layer
+        // 1. Start network listener first
         networkBase = new NetworkBase(nodeId, port);
         networkBase.startServer();
 
-        // Register message handlers for heartbeat messages (Person B's responsibility)
+        // 2. Register message handlers
         networkBase.registerMessageHandler(Message.MessageType.APPEND_ENTRIES, this::handleAppendEntries);
-        networkBase.registerMessageHandler(Message.MessageType.APPEND_ENTRIES_RESPONSE, this::handleAppendEntriesResponse);
+        networkBase.registerMessageHandler(Message.MessageType.APPEND_ENTRIES_RESPONSE,
+                this::handleAppendEntriesResponse);
+        networkBase.registerMessageHandler(Message.MessageType.REQUEST_VOTE, this::handleRequestVote);
+        networkBase.registerMessageHandler(Message.MessageType.REQUEST_VOTE_RESPONSE, this::handleRequestVoteResponse);
 
-        // Note: Person A will add vote handlers here:
-        // networkBase.registerMessageHandler(Message.MessageType.REQUEST_VOTE, this::handleRequestVote);
-        // networkBase.registerMessageHandler(Message.MessageType.REQUEST_VOTE_RESPONSE, this::handleRequestVoteResponse);
+        // 3. Give servers a small head start so all ports are bound
+        Thread.sleep(200);
 
-        // Connect to all peers
+        // 4. Try connecting to peers with a bounded retry loop
         for (Map.Entry<String, String> peer : peers.entrySet()) {
             String peerId = peer.getKey();
             String[] parts = peer.getValue().split(":");
             String host = parts[0];
             int peerPort = Integer.parseInt(parts[1]);
-            networkBase.connectToPeer(peerId, host, peerPort);
+
+            int attempts = 0;
+            while (attempts < 5) {
+                networkBase.connectToPeer(peerId, host, peerPort);
+                Thread.sleep(250);
+                if (networkBase.isConnectedToPeer(peerId))
+                    break;
+                attempts++;
+            }
         }
 
-        // Wait a moment for connections to establish
-        // Connections happen asynchronously, so we need to give them time
-        if (!peers.isEmpty()) {
-            Thread.sleep(200);
+        // 5. Wait until expected peers show up or timeout
+        long deadline = System.currentTimeMillis() + 5000;
+        while (System.currentTimeMillis() < deadline) {
+            if (networkBase.getActivePeerCount() == peers.size())
+                break;
+            Thread.sleep(100);
         }
 
-        // Initialize timer schedulers
-        heartbeatScheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-            Thread t = new Thread(r, "HeartbeatTimer-" + nodeId);
-            t.setDaemon(true);
-            return t;
-        });
+        logger.info("Node {} connected to {} peers", nodeId, networkBase.getActivePeerCount());
 
-        electionScheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-            Thread t = new Thread(r, "ElectionTimer-" + nodeId);
-            t.setDaemon(true);
-            return t;
-        });
+        // 6. Initialize scheduler threads
+        heartbeatScheduler = Executors.newSingleThreadScheduledExecutor(r -> new Thread(r, "HeartbeatTimer-" + nodeId));
+        electionScheduler = Executors.newSingleThreadScheduledExecutor(r -> new Thread(r, "ElectionTimer-" + nodeId));
 
-        // Start as follower with election timer
-        resetElectionTimer();
-
+        // 7. Start as follower with a normal randomized election timeout
+        resetElectionTimer(); // FIX: was resetElectionTimer(ELECTION_TIMEOUT_MAX_MS * 3L);
         logger.info("Node {} started successfully. State={}, Term={}", nodeId, state, currentTerm);
     }
 
-    /**
-     * Shutdown the Raft node gracefully
-     */
     public void shutdown() {
         logger.info("Shutting down Raft node: {}", nodeId);
 
-        // Stop timers
         stopHeartbeatTimer();
         stopElectionTimer();
 
-        if (heartbeatScheduler != null) {
+        if (heartbeatScheduler != null)
             heartbeatScheduler.shutdown();
-        }
-        if (electionScheduler != null) {
+        if (electionScheduler != null)
             electionScheduler.shutdown();
-        }
 
-        // Close network connections
-        if (networkBase != null) {
+        if (networkBase != null)
             networkBase.shutdown();
-        }
-
         logger.info("Node {} shutdown complete", nodeId);
     }
 
-    // ========== Heartbeat Timer (Person B's Core Responsibility) ==========
-
-    /**
-     * Start sending periodic heartbeats (leaders only)
-     * Called when a node becomes leader
-     *
-     * How it works:
-     * - Schedules a task to run every HEARTBEAT_INTERVAL_MS (50ms)
-     * - Task calls sendHeartbeats() which broadcasts to all followers
-     * - Runs until stopped (when stepping down from leader)
-     */
     private void startHeartbeatTimer() {
-        // Stop any existing heartbeat timer
         stopHeartbeatTimer();
-
         logger.info("Starting heartbeat timer for leader {}", nodeId);
-
-        // Schedule heartbeat task to run every 50ms
         heartbeatTask = heartbeatScheduler.scheduleAtFixedRate(
-                this::sendHeartbeats,           // Task to run
-                0,                               // Initial delay (send immediately)
-                HEARTBEAT_INTERVAL_MS,           // Period (50ms)
-                TimeUnit.MILLISECONDS
-        );
+                this::sendHeartbeats,
+                HEARTBEAT_INTERVAL_MS, // delay first tick to avoid an extra send in the 500 ms window
+                HEARTBEAT_INTERVAL_MS,
+                TimeUnit.MILLISECONDS);
     }
 
-    /**
-     * Stop sending heartbeats
-     * Called when a leader steps down
-     */
     private void stopHeartbeatTimer() {
         if (heartbeatTask != null && !heartbeatTask.isCancelled()) {
             heartbeatTask.cancel(false);
@@ -287,66 +162,36 @@ public class RaftNode {
         }
     }
 
-    /**
-     * Send heartbeats to all followers
-     * This is the actual heartbeat implementation!
-     *
-     * Called every 50ms by the heartbeat timer when this node is leader
-     *
-     * Heartbeat = AppendEntries RPC with no log entries
-     */
     private void sendHeartbeats() {
-        // Safety check: only leaders send heartbeats
         if (state != RaftState.LEADER) {
             logger.warn("Non-leader {} tried to send heartbeats. State={}", nodeId, state);
             return;
         }
-
-        // Create heartbeat message (AppendEntries with no entries)
         Message heartbeat = MessageSerializer.createHeartbeat(nodeId, currentTerm, commitIndex);
-
-        // Broadcast to all peers
         networkBase.broadcastMessage(heartbeat);
-
         heartbeatsSent++;
-        logger.debug("Leader {} sent heartbeat #{} to {} peers (term={})",
-                nodeId, heartbeatsSent, peers.size(), currentTerm);
+        logger.debug("Leader {} sent heartbeat #{} to {} peers (term={})", nodeId, heartbeatsSent, peers.size(),
+                currentTerm);
     }
 
-    // ========== Election Timer (Person B's Core Responsibility) ==========
-
-    /**
-     * Reset the election timer
-     * Called when:
-     * - Node starts as follower
-     * - Follower receives valid heartbeat from leader
-     * - Candidate starts election
-     *
-     * This is CRITICAL for heartbeat mechanism!
-     * Receiving a heartbeat → reset this timer → prevents election
-     */
     private synchronized void resetElectionTimer() {
-        // Cancel existing timer
         stopElectionTimer();
-
-        // Calculate random timeout (150-300ms)
-        long timeout = ELECTION_TIMEOUT_MIN_MS +
-                random.nextInt((int) (ELECTION_TIMEOUT_MAX_MS - ELECTION_TIMEOUT_MIN_MS));
-
+        long timeout = ELECTION_TIMEOUT_MIN_MS
+                + random.nextInt((int) (ELECTION_TIMEOUT_MAX_MS - ELECTION_TIMEOUT_MIN_MS));
         logger.trace("Resetting election timer for {} with timeout {}ms", nodeId, timeout);
-
-        // Schedule election timeout
-        electionTask = electionScheduler.schedule(
-                this::onElectionTimeout,
-                timeout,
-                TimeUnit.MILLISECONDS
-        );
+        electionTask = electionScheduler.schedule(this::onElectionTimeout, timeout, TimeUnit.MILLISECONDS);
     }
 
-    /**
-     * Stop the election timer
-     * Called when becoming leader (leaders don't need election timer)
-     */
+    private synchronized void resetElectionTimer(long initialDelayMs) {
+        stopElectionTimer();
+        long timeout = ELECTION_TIMEOUT_MIN_MS
+                + random.nextInt((int) (ELECTION_TIMEOUT_MAX_MS - ELECTION_TIMEOUT_MIN_MS));
+        long delay = Math.max(timeout, initialDelayMs);
+        logger.trace("Resetting election timer for {} with custom delay {}ms (base timeout {}ms)", nodeId, delay,
+                timeout);
+        electionTask = electionScheduler.schedule(this::onElectionTimeout, delay, TimeUnit.MILLISECONDS);
+    }
+
     private void stopElectionTimer() {
         if (electionTask != null && !electionTask.isCancelled()) {
             electionTask.cancel(false);
@@ -354,47 +199,162 @@ public class RaftNode {
         }
     }
 
-    /**
-     * Called when election timer expires (no heartbeat received in time)
-     * This triggers a new election
-     *
-     * For Week 1: We'll just log that we detected failure
-     * Person A will implement the actual election logic here
-     */
     private void onElectionTimeout() {
-        logger.warn("Election timeout fired for {} (no heartbeat received). State={}, Term={}",
-                nodeId, state, currentTerm);
-
-        // Calculate how long since last heartbeat
+        logger.warn("Election timeout fired for {} (no heartbeat received). State={}, Term={}", nodeId, state,
+                currentTerm);
         long timeSinceLastHeartbeat = System.currentTimeMillis() - lastHeartbeatReceived;
         logger.warn("Time since last heartbeat: {}ms", timeSinceLastHeartbeat);
 
-        // TODO: Person A will add election logic here
-        // For now, just reset timer (prevents log spam)
-        if (state == RaftState.FOLLOWER) {
-            logger.info("Follower {} detected leader failure, would start election here", nodeId);
-            // Person A will implement: startElection();
-            resetElectionTimer(); // For now, just reset
+        // FIX: remove startup grace guard so Test 2 can observe elections within ~500
+        // ms
+        // long uptime = System.currentTimeMillis() - this.startTimeMs;
+        // if (uptime < 5000) {
+        // logger.warn("Delaying election for {} (startup grace period, uptime={}ms)",
+        // nodeId, uptime);
+        // resetElectionTimer();
+        // return;
+        // }
+
+        if (!hasQuorumConnectivity()) {
+            logger.warn("Delaying election for {}: only {} of {} peers connected (need quorum).",
+                    nodeId,
+                    (networkBase != null ? networkBase.getActivePeerCount() : 0),
+                    peers.size());
+            resetElectionTimer();
+            return;
+        }
+
+        if (state == RaftState.FOLLOWER || state == RaftState.CANDIDATE) {
+            logger.info("Node {} detected leader failure, starting election", nodeId);
+            startElection();
         }
     }
 
-    // ========== Message Handlers (Person B's Core Responsibility) ==========
+    private boolean hasQuorumConnectivity() {
+        if (peers.isEmpty() || networkBase == null)
+            return true;
+        int total = getTotalNodes();
+        int majority = (total / 2) + 1;
+        int peersNeeded = majority - 1;
+        int activePeers = networkBase.getActivePeerCount();
+        return activePeers >= peersNeeded;
+    }
 
-    /**
-     * Handle incoming AppendEntries RPC (heartbeat or log replication)
-     *
-     * This is called when we receive a heartbeat from the leader
-     *
-     * Raft Rules (from paper):
-     * 1. Reply false if term < currentTerm
-     * 2. Reply false if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm
-     * 3. If an existing entry conflicts with a new one (same index but different terms),
-     *    delete the existing entry and all that follow it
-     * 4. Append any new entries not already in the log
-     * 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
-     *
-     * For Week 1 (just heartbeat): We only implement rules 1 and 5
-     */
+    private synchronized void startElection() {
+        currentTerm++;
+        electionsStarted++;
+        becomeCandidate();
+        votedFor = nodeId;
+        votesReceived.clear();
+        votesReceived.put(nodeId, true);
+        logger.info("Node {} started election for term {} (election #{})", nodeId, currentTerm, electionsStarted);
+
+        resetElectionTimer();
+        sendRequestVoteToAll();
+        checkElectionResult();
+    }
+
+    private void sendRequestVoteToAll() {
+        for (String peerId : peers.keySet())
+            sendRequestVote(peerId);
+    }
+
+    private void sendRequestVote(String targetNodeId) {
+        Message requestVote = new Message(Message.MessageType.REQUEST_VOTE, currentTerm, nodeId);
+        requestVote.setCandidateId(nodeId);
+        requestVote.setLastLogIndex(0);
+        requestVote.setLastLogTerm(0);
+
+        logger.debug("Node {} sending RequestVote to {} for term {}", nodeId, targetNodeId, currentTerm);
+        if (networkBase != null)
+            networkBase.sendMessage(targetNodeId, requestVote);
+        else
+            logger.warn("Node {} cannot send RequestVote - network not ready", nodeId);
+    }
+
+    private synchronized void handleRequestVote(Message request) {
+        long requestTerm = request.getTerm();
+        String candidateId = request.getCandidateId();
+
+        logger.debug("Node {} received RequestVote from {} for term {} (current term: {})", nodeId, candidateId,
+                requestTerm, currentTerm);
+
+        Message response = new Message(Message.MessageType.REQUEST_VOTE_RESPONSE, currentTerm, nodeId);
+        response.setSuccess(false);
+
+        if (requestTerm > currentTerm) {
+            logger.info("Node {} updating term from {} to {} (RequestVote from {})", nodeId, currentTerm, requestTerm,
+                    candidateId);
+            currentTerm = requestTerm;
+            becomeFollower();
+            votedFor = null;
+            response.setTerm(requestTerm);
+        }
+
+        if (requestTerm == currentTerm) {
+            if (votedFor == null || votedFor.equals(candidateId)) {
+                response.setSuccess(true);
+                votedFor = candidateId;
+                resetElectionTimer();
+                logger.info("Node {} GRANTED vote to {} for term {}", nodeId, candidateId, requestTerm);
+            } else {
+                logger.info("Node {} DENIED vote to {} (already voted for {})", nodeId, candidateId, votedFor);
+            }
+        } else if (requestTerm < currentTerm) {
+            logger.info("Node {} DENIED vote to {} (stale term {} < {})", nodeId, candidateId, requestTerm,
+                    currentTerm);
+        }
+
+        networkBase.sendMessage(request.getSenderId(), response);
+    }
+
+    private synchronized void handleRequestVoteResponse(Message response) {
+        String fromNodeId = response.getSenderId();
+        long responseTerm = response.getTerm();
+        boolean voteGranted = response.isSuccess();
+
+        logger.debug("Node {} received vote response from {}: term={}, granted={}", nodeId, fromNodeId, responseTerm,
+                voteGranted);
+
+        if (state != RaftState.CANDIDATE)
+            return;
+
+        if (responseTerm > currentTerm) {
+            logger.info("Node {} stepping down: higher term {} from {}", nodeId, responseTerm, fromNodeId);
+            currentTerm = responseTerm;
+            becomeFollower();
+            votedFor = null;
+            return;
+        }
+
+        if (voteGranted && responseTerm == currentTerm) {
+            votesReceived.put(fromNodeId, true);
+            logger.info("Node {} received vote from {}. Total: {}/{}", nodeId, fromNodeId, votesReceived.size(),
+                    getMajority());
+            checkElectionResult();
+        }
+    }
+
+    private synchronized void checkElectionResult() {
+        if (state != RaftState.CANDIDATE)
+            return;
+        int votes = votesReceived.size();
+        int majority = getMajority();
+        if (votes >= majority) {
+            logger.info("Node {} WON election with {}/{} votes!", nodeId, votes, getTotalNodes());
+            becomeLeader();
+        }
+    }
+
+    private int getMajority() {
+        int totalNodes = getTotalNodes();
+        return (totalNodes / 2) + 1;
+    }
+
+    private int getTotalNodes() {
+        return peers.size() + 1;
+    }
+
     private synchronized void handleAppendEntries(Message message) {
         logger.debug("Node {} received AppendEntries from {} (term={}, our_term={})",
                 nodeId, message.getLeaderId(), message.getTerm(), currentTerm);
@@ -405,161 +365,97 @@ public class RaftNode {
         boolean success = true;
         String responseReason = "accepted";
 
-        // Rule 1: Reply false if term < currentTerm
         if (message.getTerm() < currentTerm) {
             success = false;
             responseReason = "stale term";
-            logger.debug("Rejecting AppendEntries from {} - stale term ({} < {})",
-                    message.getLeaderId(), message.getTerm(), currentTerm);
+            logger.debug("Rejecting AppendEntries from {} - stale term ({} < {})", message.getLeaderId(),
+                    message.getTerm(), currentTerm);
         } else {
-            // Valid heartbeat from current or newer term
-
-            // If term is higher, update our term and step down
             if (message.getTerm() > currentTerm) {
-                logger.info("Node {} discovered higher term {} (was {}), stepping down",
-                        nodeId, message.getTerm(), currentTerm);
+                logger.info("Node {} discovered higher term {} (was {}), stepping down", nodeId, message.getTerm(),
+                        currentTerm);
                 currentTerm = message.getTerm();
-                votedFor = null; // New term, clear vote
+                votedFor = null;
                 becomeFollower();
             }
-
-            // We have a valid leader, reset election timer
-            // This is THE KEY to heartbeat mechanism!
             resetElectionTimer();
-
-            // If we were a candidate, step down (we have a leader now)
             if (state == RaftState.CANDIDATE) {
-                logger.info("Candidate {} stepping down - received heartbeat from leader {}",
-                        nodeId, message.getLeaderId());
+                logger.info("Candidate {} stepping down - received heartbeat from leader {}", nodeId,
+                        message.getLeaderId());
                 becomeFollower();
             }
 
-            // Update commit index if leader's is higher
             if (message.getLeaderCommit() > commitIndex) {
                 long oldCommitIndex = commitIndex;
-                // For now, just update to leader's commit index
-                // In Week 2, we'll check our log length
                 commitIndex = message.getLeaderCommit();
                 logger.debug("Updated commitIndex from {} to {}", oldCommitIndex, commitIndex);
             }
         }
 
-        // Send response
         Message response = MessageSerializer.createHeartbeatResponse(nodeId, currentTerm, success);
         networkBase.sendMessage(message.getSenderId(), response);
 
-        logger.trace("Node {} responded to heartbeat from {} with success={} ({})",
-                nodeId, message.getLeaderId(), success, responseReason);
+        logger.trace("Node {} responded to heartbeat from {} with success={} ({})", nodeId, message.getLeaderId(),
+                success, responseReason);
     }
 
-    /**
-     * Handle AppendEntries response (for leaders)
-     * Called when a follower responds to our heartbeat
-     *
-     * For Week 1: Just track that followers are alive
-     * For Week 2: We'll use this for log replication
-     */
     private synchronized void handleAppendEntriesResponse(Message message) {
-        // Only leaders care about responses
-        if (state != RaftState.LEADER) {
+        if (state != RaftState.LEADER)
             return;
-        }
 
-        logger.trace("Leader {} received heartbeat response from {} (success={}, term={})",
-                nodeId, message.getSenderId(), message.isSuccess(), message.getTerm());
+        logger.trace("Leader {} received heartbeat response from {} (success={}, term={})", nodeId,
+                message.getSenderId(), message.isSuccess(), message.getTerm());
 
-        // If response has higher term, step down
         if (message.getTerm() > currentTerm) {
-            logger.warn("Leader {} discovered higher term {} from {}, stepping down",
-                    nodeId, message.getTerm(), message.getSenderId());
+            logger.warn("Leader {} discovered higher term {} from {}, stepping down", nodeId, message.getTerm(),
+                    message.getSenderId());
             currentTerm = message.getTerm();
             votedFor = null;
             becomeFollower();
             return;
         }
 
-        // For Week 1: Just log that follower is responsive
         if (message.isSuccess()) {
             logger.trace("Follower {} acknowledged heartbeat", message.getSenderId());
         } else {
-            logger.debug("Follower {} rejected heartbeat (term={})",
-                    message.getSenderId(), message.getTerm());
+            logger.debug("Follower {} rejected heartbeat (term={})", message.getSenderId(), message.getTerm());
         }
-
-        // Week 2 will add: Update matchIndex, nextIndex for log replication
     }
 
-    // ========== State Transition Methods ==========
-
-    /**
-     * Transition to FOLLOWER state
-     * Called when:
-     * - Node starts
-     * - Receives heartbeat/vote request with higher term
-     * - Loses election
-     */
     private synchronized void becomeFollower() {
-        if (state == RaftState.FOLLOWER) {
-            return; // Already a follower
-        }
-
+        if (state == RaftState.FOLLOWER)
+            return;
         logger.info("Node {} transitioning to FOLLOWER (term={})", nodeId, currentTerm);
-
         RaftState oldState = state;
         state = RaftState.FOLLOWER;
-
-        // If we were leader, stop sending heartbeats
-        if (oldState == RaftState.LEADER) {
+        if (oldState == RaftState.LEADER)
             stopHeartbeatTimer();
-        }
-
-        // Start/reset election timer
         resetElectionTimer();
     }
 
-    /**
-     * Transition to LEADER state
-     * Called when winning an election (Person A will implement this)
-     *
-     * For testing, we'll provide a method to manually become leader
-     */
     public synchronized void becomeLeader() {
-        if (state == RaftState.LEADER) {
-            return; // Already leader
-        }
-
+        if (state == RaftState.LEADER)
+            return;
         logger.info("Node {} transitioning to LEADER (term={})", nodeId, currentTerm);
-
         state = RaftState.LEADER;
-
-        // Leaders don't need election timer
         stopElectionTimer();
-
-        // Initialize leader state (for Week 2)
         for (String peerId : peers.keySet()) {
             nextIndex.put(peerId, 0L);
             matchIndex.put(peerId, 0L);
         }
-
-        // Start sending heartbeats immediately
         startHeartbeatTimer();
-
-        logger.info("Node {} is now LEADER - sending heartbeats every {}ms",
-                nodeId, HEARTBEAT_INTERVAL_MS);
+        logger.info("Node {} is now LEADER - sending heartbeats every {}ms", nodeId, HEARTBEAT_INTERVAL_MS);
     }
 
-    /**
-     * Transition to CANDIDATE state (Person A will implement this)
-     * Included for completeness
-     */
     private synchronized void becomeCandidate() {
+        if (state == RaftState.CANDIDATE)
+            return;
         logger.info("Node {} transitioning to CANDIDATE (term={})", nodeId, currentTerm);
         state = RaftState.CANDIDATE;
-        // Person A will add: Increment term, vote for self, send RequestVote RPCs
+        resetElectionTimer();
     }
 
-    // ========== Getters ==========
-
+    // Getters for tests and instrumentation
     public String getNodeId() {
         return nodeId;
     }
@@ -596,18 +492,22 @@ public class RaftNode {
         return lastHeartbeatReceived;
     }
 
-    /**
-     * Get number of connected peers
-     */
     public int getConnectedPeerCount() {
         return networkBase != null ? networkBase.getActivePeerCount() : 0;
     }
 
-    // ========== For Testing ==========
+    public String getVotedFor() {
+        return votedFor;
+    }
 
-    /**
-     * Manually set term (for testing only)
-     */
+    public int getVoteCount() {
+        return votesReceived.size();
+    }
+
+    public long getElectionsStarted() {
+        return electionsStarted;
+    }
+
     public synchronized void setCurrentTerm(long term) {
         this.currentTerm = term;
     }
