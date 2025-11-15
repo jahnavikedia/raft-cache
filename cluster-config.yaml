@@ -1,0 +1,82 @@
+# Raft Cluster Configuration
+#
+# This file defines the cluster topology and timing parameters for the Raft consensus algorithm.
+#
+# Timing Parameters:
+# - election_timeout_min: Minimum time (ms) a follower waits before starting an election
+# - election_timeout_max: Maximum time (ms) a follower waits before starting an election
+#   * Randomized between min and max to prevent split votes
+#   * Should be 10-20x the network round-trip time
+# - heartbeat_interval: How often (ms) the leader sends heartbeats
+#   * Must be much smaller than election timeout (typically 1/3 or less)
+#
+# Cluster Topology:
+# - nodes: List of all nodes in the cluster
+#   * Each node has a unique id, host, and port
+#   * Minimum 3 nodes recommended for fault tolerance (2f+1 where f is failures tolerated)
+
+cluster:
+  # Timing configuration (milliseconds)
+  election_timeout_min: 150
+  election_timeout_max: 300
+  heartbeat_interval: 50
+
+  # Cluster nodes
+  nodes:
+    - id: "node1"
+      host: "localhost"
+      port: 8001
+
+    - id: "node2"
+      host: "localhost"
+      port: 8002
+
+    - id: "node3"
+      host: "localhost"
+      port: 8003
+
+# Example: Production deployment across 3 servers
+# cluster:
+#   election_timeout_min: 150
+#   election_timeout_max: 300
+#   heartbeat_interval: 50
+#
+#   nodes:
+#     - id: "server1"
+#       host: "10.0.1.10"
+#       port: 8001
+#
+#     - id: "server2"
+#       host: "10.0.1.11"
+#       port: 8001
+#
+#     - id: "server3"
+#       host: "10.0.1.12"
+#       port: 8001
+
+# Example: 5-node cluster (tolerates 2 failures)
+# cluster:
+#   election_timeout_min: 150
+#   election_timeout_max: 300
+#   heartbeat_interval: 50
+#
+#   nodes:
+#     - id: "node1"
+#       host: "raft1.example.com"
+#       port: 8001
+#
+#     - id: "node2"
+#       host: "raft2.example.com"
+#       port: 8001
+#
+#     - id: "node3"
+#       host: "raft3.example.com"
+#       port: 8001
+#
+#     - id: "node4"
+#       host: "raft4.example.com"
+#       port: 8001
+#
+#     - id: "node5"
+#       host: "raft5.example.com"
+#       port: 8001

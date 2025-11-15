@@ -1,0 +1,18 @@
+# Test cluster configuration for unit tests
+cluster:
+  election_timeout_min: 150
+  election_timeout_max: 300
+  heartbeat_interval: 50
+
+  nodes:
+    - id: "test-node1"
+      host: "localhost"
+      port: 9001
+
+    - id: "test-node2"
+      host: "localhost"
+      port: 9002
+
+    - id: "test-node3"
+      host: "localhost"
+      port: 9003

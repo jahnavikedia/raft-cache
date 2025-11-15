@@ -1,145 +1,160 @@
-# Quick Start Guide
+# Quick Start - Test Your Raft Implementation
 
-## Extract and Open Project (5 minutes)
+## 🎯 Three Ways to See Raft in Action
 
-1. **Extract the archive**:
-   ```bash
-   tar -xzf raft-cache.tar.gz
-   cd raft-cache
-   ```
-
-2. **Open in VS Code**:
-   ```bash
-   code .
-   ```
-   Or: File → Open Folder → select `raft-cache`
-
-3. **Wait for indexing** (30 seconds): VS Code will detect the Maven project and download dependencies automatically.
-
-## First Build (2 minutes)
-
-In VS Code terminal (`` Ctrl+` ``):
-```bash
-mvn clean install
-```
-
-Expected output:
-```
-[INFO] BUILD SUCCESS
-[INFO] Total time: 30s
-```
-
-## Run Your First Node (30 seconds)
+### 1️⃣ Run Tests (2 minutes)
 
 ```bash
-mvn exec:java -Dexec.mainClass="com.distributed.cache.Main" -Dexec.args="node1 8001"
+mvn test -Dtest=RaftNodeElectionTest
 ```
 
-You should see:
+**Expected Result:**
 ```
-INFO  c.d.cache.Main - Starting Distributed Raft Cache...
-INFO  c.d.cache.raft.RaftNode - RaftNode initialized: id=node1, port=8001
-INFO  c.d.cache.raft.RaftNode - Starting Raft node: node1
-INFO  c.d.cache.Main - Node node1 started on port 8001
-```
-
-Press `Ctrl+C` to stop.
-
-## Run Tests
-
-```bash
-mvn test
-```
-
-Expected:
-```
-Tests run: 5, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 11, Failures: 0, Errors: 0, Skipped: 0
 [INFO] BUILD SUCCESS
 ```
 
-## What You Have Now
-
-✅ Complete Maven project structure  
-✅ Core Raft classes (RaftNode, LogEntry, Message, RaftState)  
-✅ Cache implementation (CacheStore, CacheEntry)  
-✅ ML client stub (for future integration)  
-✅ Logging configured  
-✅ Basic unit tests  
-
-## Next Steps (Week 1 Tasks)
-
-1. **Implement Leader Election** (Day 1-2):
-   - Add election timeout in RaftNode
-   - Implement vote request/response logic
-   - Test election with multiple nodes
-
-2. **Add Network Layer** (Day 3-4):
-   - Create Netty server/client in `network/` package
-   - Implement message sending/receiving
-   - Test communication between nodes
-
-3. **Implement Heartbeat** (Day 5):
-   - Add heartbeat timer
-   - Send periodic AppendEntries (empty) from leader
-   - Followers reset election timer on heartbeat
-
-See README.md for complete roadmap!
-
-## Files Overview
-
-```
-pom.xml                     → Maven configuration (dependencies)
-SETUP.md                    → Detailed setup instructions
-README.md                   → Project overview and roadmap
-
-src/main/java/com/distributed/cache/
-├── Main.java               → Entry point
-├── raft/
-│   ├── RaftNode.java       → Core node (TODO: add election logic)
-│   ├── RaftState.java      → FOLLOWER/CANDIDATE/LEADER states
-│   ├── LogEntry.java       → Represents log entries
-│   └── Message.java        → Inter-node messages
-├── cache/
-│   ├── CacheStore.java     → Key-value storage
-│   └── CacheEntry.java     → Cache entry with metadata
-└── ml/
-    └── MLClient.java       → ML service client (stub)
-
-src/test/java/              → Your tests go here
-```
-
-## Common Commands
+### 2️⃣ Interactive Demo (Fun!)
 
 ```bash
-# Build
-mvn clean install
+# Compile first
+mvn clean compile
 
-# Run tests
-mvn test
-
-# Run single node
-mvn exec:java -Dexec.mainClass="com.distributed.cache.Main" -Dexec.args="node1 8001"
-
-# Package JAR
-mvn package
-
-# Run JAR
-java -jar target/raft-cache-1.0-SNAPSHOT.jar node1 8001
+# Run the demo
+mvn exec:java -Dexec.mainClass="com.distributed.cache.demo.RaftDemo"
 ```
 
-## Tips
+**What you'll see:**
+- Create a 3-node cluster (Alice, Bob, Charlie)
+- Watch leader election happen
+- Kill the leader and see automatic re-election
+- Real-time cluster status
 
-- **Keep it simple initially**: Focus on getting leader election working first
-- **Test frequently**: Run `mvn test` after each feature
-- **Use logging**: Check `logs/raft-cache.log` for debugging
-- **Git commits**: Commit after each working feature
-- **Ask questions**: If stuck, refer to SETUP.md or reach out
+**Demo Menu:**
+```
+Options:
+  1 - Show cluster status
+  2 - Show detailed statistics
+  3 - Kill the leader (simulate failure)
+  4 - Restart a dead node
+  5 - Watch cluster for 10 seconds
+  q - Quit
+```
 
-## Week 1 Goal
+### 3️⃣ Quick Verification (30 seconds)
 
-By end of week 1, you should have:
-- Leader election working with 3 nodes
-- Basic network communication
-- Heartbeat mechanism preventing unnecessary elections
+```bash
+mvn clean compile && mvn test -Dtest=RaftNodeElectionTest#testElectionProducesLeader
+```
 
-Good luck! 🚀
+Just runs one test to verify it works!
+
+---
+
+## 📊 What You'll Observe
+
+### During Tests
+
+**Phase 1: Startup**
+```
+[INFO] Starting Raft node: node1
+[INFO] Server started on port 8001
+[INFO] Connected to peer node2 at localhost:8002
+```
+
+**Phase 2: Election**
+```
+[WARN] Election timeout fired for node2
+[INFO] Node node2 started election for term 1
+[INFO] Node node1 GRANTED vote to node2
+[INFO] Node node2 WON election with 2/3 votes!
+[INFO] Node node2 transitioning to LEADER
+```
+
+**Phase 3: Heartbeats**
+```
+[DEBUG] Leader node2 sent heartbeat #1 to 2 peers
+[DEBUG] Node node1 received AppendEntries from node2
+[DEBUG] Node node3 received AppendEntries from node2
+```
+
+**Phase 4: Test Results**
+```
+[INFO] ✓ Election triggered after timeout. Elections started: 2
+[INFO] ✓ Node node2 became leader
+[INFO] ✓ Leader sent 39 heartbeats
+[INFO] ✓ Followers received 39/39 heartbeats
+[INFO] ✓ System stable: node2 is leader, others are followers
+```
+
+---
+
+## 🎮 Try This Flow
+
+1. **Start with tests** to verify everything works:
+   ```bash
+   mvn test -Dtest=RaftNodeElectionTest
+   ```
+
+2. **Run the demo** to see it visually:
+   ```bash
+   mvn exec:java -Dexec.mainClass="com.distributed.cache.demo.RaftDemo"
+   ```
+
+3. **In the demo, try this sequence:**
+   - Type `1` - See Alice, Bob, Charlie status
+   - Wait 2 seconds - Watch election happen automatically
+   - Type `1` again - See who became leader
+   - Type `5` - Watch cluster for 10 seconds (see heartbeats counting up)
+   - Type `3` - Kill the leader
+   - Type `1` - See new leader elected!
+   - Type `q` - Quit
+
+---
+
+## ✅ Success Indicators
+
+You'll know it's working when you see:
+
+- ✅ Exactly **1 leader** elected
+- ✅ Heartbeats sent every **~50ms**
+- ✅ Followers receive heartbeats
+- ✅ **No elections** while leader is healthy
+- ✅ **Quick re-election** (<500ms) after leader failure
+- ✅ All nodes on **same term**
+
+---
+
+## 🐛 Troubleshooting
+
+**"Address already in use"**
+```bash
+# Wait 30 seconds, or kill processes on ports 8001-8003
+lsof -ti:8001-8003 | xargs kill -9
+```
+
+**Demo won't start**
+```bash
+# Make sure it compiled
+mvn clean compile
+```
+
+**Tests are slow**
+- **Normal!** Tests wait for timeouts (150-300ms each)
+- Full suite takes ~3 minutes
+
+---
+
+## 📖 Full Documentation
+
+- **TESTING_GUIDE.md** - Complete testing documentation
+- **DAY2_HEARTBEAT_IMPLEMENTATION.md** - Technical deep dive
+- **QUICK_REFERENCE.md** - One-page summary for developers
+
+---
+
+## 🎉 That's It!
+
+Your Raft consensus implementation is **fully working**!
+
+**Next:** Week 2 will add log replication 🚀
