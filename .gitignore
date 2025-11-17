@@ -38,3 +38,9 @@ __pycache__/
 # Environment
 .env
 *.env
+
+# Persistent data
+data/
+data/node-*/
+**/data/
+**/data/node-*/

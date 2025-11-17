@@ -2,6 +2,7 @@ package com.distributed.cache.raft;
 
 import com.distributed.cache.network.NetworkBase;
 import com.distributed.cache.network.MessageSerializer;
+import com.distributed.cache.persistence.PersistentState;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -56,13 +57,22 @@ public class RaftNode {
     private volatile long heartbeatsReceived = 0;
     private volatile long electionsStarted = 0;
 
+    // --- Persistent state (term/vote durable storage)
+    private final PersistentState persistentState;
+
     public RaftNode(String nodeId, int port) {
         this.nodeId = nodeId;
         this.port = port;
         this.state = RaftState.FOLLOWER;
+
+        // Load persistent state from disk
+        this.persistentState = new PersistentState(nodeId);
+        this.currentTerm = persistentState.getStoredTerm();
+        this.votedFor = persistentState.getStoredVotedFor();
+
         this.lastHeartbeatReceived = System.currentTimeMillis();
-        logger.info("RaftNode initialized: id={}, port={}, initial_term={}, initial_state={}",
-                nodeId, port, currentTerm, state);
+        logger.info("RaftNode initialized: id={}, port={}, initial_term={}, initial_state={}, votedFor={}",
+                nodeId, port, currentTerm, state, votedFor);
     }
 
     public void configurePeers(Map<String, String> peerMap) {
@@ -242,9 +252,11 @@ public class RaftNode {
 
     private synchronized void startElection() {
         currentTerm++;
+        persistentState.saveTerm(currentTerm); // persist term
         electionsStarted++;
         becomeCandidate();
         votedFor = nodeId;
+        persistentState.saveVotedFor(votedFor);
         votesReceived.clear();
         votesReceived.put(nodeId, true);
         logger.info("Node {} started election for term {} (election #{})", nodeId, currentTerm, electionsStarted);
@@ -276,25 +288,19 @@ public class RaftNode {
         long requestTerm = request.getTerm();
         String candidateId = request.getCandidateId();
 
+        updateTerm(requestTerm);
+
         logger.debug("Node {} received RequestVote from {} for term {} (current term: {})", nodeId, candidateId,
                 requestTerm, currentTerm);
 
         Message response = new Message(Message.MessageType.REQUEST_VOTE_RESPONSE, currentTerm, nodeId);
         response.setSuccess(false);
 
-        if (requestTerm > currentTerm) {
-            logger.info("Node {} updating term from {} to {} (RequestVote from {})", nodeId, currentTerm, requestTerm,
-                    candidateId);
-            currentTerm = requestTerm;
-            becomeFollower();
-            votedFor = null;
-            response.setTerm(requestTerm);
-        }
-
         if (requestTerm == currentTerm) {
             if (votedFor == null || votedFor.equals(candidateId)) {
                 response.setSuccess(true);
                 votedFor = candidateId;
+                persistentState.saveVotedFor(votedFor);
                 resetElectionTimer();
                 logger.info("Node {} GRANTED vote to {} for term {}", nodeId, candidateId, requestTerm);
             } else {
@@ -309,6 +315,7 @@ public class RaftNode {
     }
 
     private synchronized void handleRequestVoteResponse(Message response) {
+        updateTerm(response.getTerm());
         String fromNodeId = response.getSenderId();
         long responseTerm = response.getTerm();
         boolean voteGranted = response.isSuccess();
@@ -320,10 +327,7 @@ public class RaftNode {
             return;
 
         if (responseTerm > currentTerm) {
-            logger.info("Node {} stepping down: higher term {} from {}", nodeId, responseTerm, fromNodeId);
-            currentTerm = responseTerm;
-            becomeFollower();
-            votedFor = null;
+            stepDown(responseTerm);
             return;
         }
 
@@ -356,6 +360,7 @@ public class RaftNode {
     }
 
     private synchronized void handleAppendEntries(Message message) {
+        updateTerm(message.getTerm());
         logger.debug("Node {} received AppendEntries from {} (term={}, our_term={})",
                 nodeId, message.getLeaderId(), message.getTerm(), currentTerm);
 
@@ -372,11 +377,7 @@ public class RaftNode {
                     message.getTerm(), currentTerm);
         } else {
             if (message.getTerm() > currentTerm) {
-                logger.info("Node {} discovered higher term {} (was {}), stepping down", nodeId, message.getTerm(),
-                        currentTerm);
-                currentTerm = message.getTerm();
-                votedFor = null;
-                becomeFollower();
+                stepDown(message.getTerm());
             }
             resetElectionTimer();
             if (state == RaftState.CANDIDATE) {
@@ -400,6 +401,7 @@ public class RaftNode {
     }
 
     private synchronized void handleAppendEntriesResponse(Message message) {
+        updateTerm(message.getTerm());
         if (state != RaftState.LEADER)
             return;
 
@@ -407,11 +409,7 @@ public class RaftNode {
                 message.getSenderId(), message.isSuccess(), message.getTerm());
 
         if (message.getTerm() > currentTerm) {
-            logger.warn("Leader {} discovered higher term {} from {}, stepping down", nodeId, message.getTerm(),
-                    message.getSenderId());
-            currentTerm = message.getTerm();
-            votedFor = null;
-            becomeFollower();
+            stepDown(message.getTerm());
             return;
         }
 
@@ -438,6 +436,7 @@ public class RaftNode {
             return;
         logger.info("Node {} transitioning to LEADER (term={})", nodeId, currentTerm);
         state = RaftState.LEADER;
+        persistentState.saveState(currentTerm, votedFor);
         stopElectionTimer();
         for (String peerId : peers.keySet()) {
             nextIndex.put(peerId, 0L);
@@ -452,6 +451,33 @@ public class RaftNode {
             return;
         logger.info("Node {} transitioning to CANDIDATE (term={})", nodeId, currentTerm);
         state = RaftState.CANDIDATE;
+        resetElectionTimer();
+    }
+
+    /** Update term if newTerm > currentTerm */
+    private synchronized void updateTerm(long newTerm) {
+        if (newTerm > currentTerm) {
+            logger.info("Node {} updating term from {} → {}", nodeId, currentTerm, newTerm);
+            currentTerm = newTerm;
+            votedFor = null;
+            state = RaftState.FOLLOWER;
+            stopHeartbeatTimer();
+            persistentState.saveState(currentTerm, votedFor);
+            resetElectionTimer();
+        }
+    }
+
+    /** Step down (used by leaders/candidates when discovering a higher term) */
+    private synchronized void stepDown(long newTerm) {
+        if (newTerm > currentTerm) {
+            logger.warn("Node {} stepping down due to higher term {} (ours={})",
+                    nodeId, newTerm, currentTerm);
+            currentTerm = newTerm;
+        }
+        state = RaftState.FOLLOWER;
+        votedFor = null;
+        stopHeartbeatTimer();
+        persistentState.saveState(currentTerm, votedFor);
         resetElectionTimer();
     }
 
@@ -511,4 +537,57 @@ public class RaftNode {
     public synchronized void setCurrentTerm(long term) {
         this.currentTerm = term;
     }
+
+    /**************************************************************************************************
+     * TEST RELATED FUNCTIONS
+     */
+
+    // ====== Testing Initializer (no network startup) ======
+    void testInitializeForUnitTests() {
+        if (heartbeatScheduler == null) {
+            heartbeatScheduler = Executors.newSingleThreadScheduledExecutor(
+                    r -> new Thread(r, "HeartbeatTimer-" + nodeId));
+        }
+        if (electionScheduler == null) {
+            electionScheduler = Executors.newSingleThreadScheduledExecutor(
+                    r -> new Thread(r, "ElectionTimer-" + nodeId));
+        }
+        if (networkBase == null) {
+            logger.debug("Creating mock NetworkBase for unit tests (no sockets)");
+            networkBase = new NetworkBase(nodeId, port) {
+                @Override
+                public void sendMessage(String peerId, Message message) {
+                    // no-op during tests
+                    logger.debug("[Mock] sendMessage({}, {})", peerId, message.getType());
+                }
+
+                @Override
+                public void broadcastMessage(Message message) {
+                    // no-op during tests
+                    logger.debug("[Mock] broadcastMessage({})", message.getType());
+                }
+            };
+        }
+    }
+
+    // ====== Testing Accessors (package-private for unit tests only) ======
+    // These methods exist solely for testing Raft internal behavior.
+    // They delegate to private methods without exposing them publicly.
+
+    void testUpdateTerm(long newTerm) {
+        updateTerm(newTerm);
+    }
+
+    void testHandleRequestVote(Message message) {
+        handleRequestVote(message);
+    }
+
+    void testHandleAppendEntries(Message message) {
+        handleAppendEntries(message);
+    }
+
+    void testBecomeFollower() {
+        becomeFollower();
+    }
+
 }

@@ -7,7 +7,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * MessageSerializer handles JSON serialization and deserialization of Raft messages.
+ * MessageSerializer handles JSON serialization and deserialization of Raft
+ * messages.
  *
  * Uses Jackson for JSON processing, which allows us to:
  * - Convert Message objects to JSON strings for network transmission
@@ -72,6 +73,7 @@ public class MessageSerializer {
         message.setLeaderCommit(leaderCommit);
         message.setPrevLogIndex(0);
         message.setPrevLogTerm(0);
+        message.setSenderTerm(term); // ensure senderTerm propagated
         return message;
     }
 
@@ -82,6 +84,7 @@ public class MessageSerializer {
     public static Message createHeartbeatResponse(String senderId, long term, boolean success) {
         Message message = new Message(Message.MessageType.APPEND_ENTRIES_RESPONSE, term, senderId);
         message.setSuccess(success);
+        message.setSenderTerm(term); // ensure senderTerm propagated
         return message;
     }
 
@@ -94,6 +97,7 @@ public class MessageSerializer {
         message.setCandidateId(candidateId);
         message.setLastLogIndex(lastLogIndex);
         message.setLastLogTerm(lastLogTerm);
+        message.setSenderTerm(term); // ensure senderTerm propagated
         return message;
     }
 
@@ -104,6 +108,7 @@ public class MessageSerializer {
     public static Message createRequestVoteResponse(String senderId, long term, boolean voteGranted) {
         Message message = new Message(Message.MessageType.REQUEST_VOTE_RESPONSE, term, senderId);
         message.setSuccess(voteGranted);
+        message.setSenderTerm(term); // ensure senderTerm propagated
         return message;
     }
 }
