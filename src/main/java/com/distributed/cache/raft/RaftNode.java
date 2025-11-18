@@ -3,6 +3,10 @@ package com.distributed.cache.raft;
 import com.distributed.cache.network.NetworkBase;
 import com.distributed.cache.network.MessageSerializer;
 import com.distributed.cache.persistence.PersistentState;
+import com.distributed.cache.replication.RaftLog;
+import com.distributed.cache.replication.LeaderReplicator;
+import com.distributed.cache.replication.FollowerReplicator;
+import com.distributed.cache.store.KeyValueStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -60,6 +64,15 @@ public class RaftNode {
     // --- Persistent state (term/vote durable storage)
     private final PersistentState persistentState;
 
+    // --- Log replication and state machine components
+    private final RaftLog raftLog;
+    private final KeyValueStore kvStore;
+    private LeaderReplicator replicator;
+    private final FollowerReplicator followerReplicator;
+
+    private ScheduledExecutorService applyEntriesScheduler;
+    private ScheduledFuture<?> applyEntriesTask;
+
     public RaftNode(String nodeId, int port) {
         this.nodeId = nodeId;
         this.port = port;
@@ -69,6 +82,12 @@ public class RaftNode {
         this.persistentState = new PersistentState(nodeId);
         this.currentTerm = persistentState.getStoredTerm();
         this.votedFor = persistentState.getStoredVotedFor();
+
+        // Initialize log replication and state machine components
+        this.raftLog = new RaftLog(nodeId);
+        this.kvStore = new KeyValueStore(nodeId, raftLog);
+        this.followerReplicator = new FollowerReplicator(nodeId, raftLog, kvStore);
+        this.replicator = null; // Will be set when becoming leader
 
         this.lastHeartbeatReceived = System.currentTimeMillis();
         logger.info("RaftNode initialized: id={}, port={}, initial_term={}, initial_state={}, votedFor={}",
@@ -133,8 +152,17 @@ public class RaftNode {
         // 6. Initialize scheduler threads
         heartbeatScheduler = Executors.newSingleThreadScheduledExecutor(r -> new Thread(r, "HeartbeatTimer-" + nodeId));
         electionScheduler = Executors.newSingleThreadScheduledExecutor(r -> new Thread(r, "ElectionTimer-" + nodeId));
+        applyEntriesScheduler = Executors.newSingleThreadScheduledExecutor(r -> new Thread(r, "ApplyEntries-" + nodeId));
 
-        // 7. Start as follower with a normal randomized election timeout
+        // 7. Start periodic task to apply committed entries
+        applyEntriesTask = applyEntriesScheduler.scheduleAtFixedRate(
+                this::applyCommittedEntries,
+                100,
+                100,
+                TimeUnit.MILLISECONDS
+        );
+
+        // 8. Start as follower with a normal randomized election timeout
         resetElectionTimer(); // FIX: was resetElectionTimer(ELECTION_TIMEOUT_MAX_MS * 3L);
         logger.info("Node {} started successfully. State={}, Term={}", nodeId, state, currentTerm);
     }
@@ -145,13 +173,27 @@ public class RaftNode {
         stopHeartbeatTimer();
         stopElectionTimer();
 
+        if (applyEntriesTask != null && !applyEntriesTask.isCancelled()) {
+            applyEntriesTask.cancel(false);
+        }
+
+        if (replicator != null) {
+            replicator.stopReplication();
+        }
+
         if (heartbeatScheduler != null)
             heartbeatScheduler.shutdown();
         if (electionScheduler != null)
             electionScheduler.shutdown();
+        if (applyEntriesScheduler != null)
+            applyEntriesScheduler.shutdown();
 
         if (networkBase != null)
             networkBase.shutdown();
+
+        if (raftLog != null)
+            raftLog.close();
+
         logger.info("Node {} shutdown complete", nodeId);
     }
 
@@ -426,8 +468,14 @@ public class RaftNode {
         logger.info("Node {} transitioning to FOLLOWER (term={})", nodeId, currentTerm);
         RaftState oldState = state;
         state = RaftState.FOLLOWER;
-        if (oldState == RaftState.LEADER)
+        if (oldState == RaftState.LEADER) {
             stopHeartbeatTimer();
+            if (replicator != null) {
+                replicator.stopReplication();
+                replicator = null;
+            }
+            kvStore.setReplicator(null);
+        }
         resetElectionTimer();
     }
 
@@ -438,10 +486,27 @@ public class RaftNode {
         state = RaftState.LEADER;
         persistentState.saveState(currentTerm, votedFor);
         stopElectionTimer();
+
+        // Update kvStore with current term
+        kvStore.setCurrentTerm((int) currentTerm);
+
+        // Initialize nextIndex and matchIndex for all followers
         for (String peerId : peers.keySet()) {
-            nextIndex.put(peerId, 0L);
+            nextIndex.put(peerId, raftLog.getLastIndex() + 1);
             matchIndex.put(peerId, 0L);
         }
+
+        // Append NO_OP entry to commit entries from previous terms
+        long nextIndex = raftLog.getLastIndex() + 1;
+        LogEntry noOpEntry = new LogEntry(nextIndex, (int) currentTerm, "", LogEntryType.NO_OP);
+        raftLog.append(noOpEntry);
+        logger.info("Leader appended NO_OP entry at index {}", nextIndex);
+
+        // Initialize and start replicator
+        replicator = new LeaderReplicator(nodeId, (int) currentTerm, raftLog, networkBase, peers);
+        kvStore.setReplicator(replicator);
+        replicator.startReplication();
+
         startHeartbeatTimer();
         logger.info("Node {} is now LEADER - sending heartbeats every {}ms", nodeId, HEARTBEAT_INTERVAL_MS);
     }
@@ -463,6 +528,7 @@ public class RaftNode {
             state = RaftState.FOLLOWER;
             stopHeartbeatTimer();
             persistentState.saveState(currentTerm, votedFor);
+            kvStore.setCurrentTerm((int) currentTerm);
             resetElectionTimer();
         }
     }
@@ -474,16 +540,40 @@ public class RaftNode {
                     nodeId, newTerm, currentTerm);
             currentTerm = newTerm;
         }
+        RaftState oldState = state;
         state = RaftState.FOLLOWER;
         votedFor = null;
         stopHeartbeatTimer();
+        if (oldState == RaftState.LEADER && replicator != null) {
+            replicator.stopReplication();
+            replicator = null;
+            kvStore.setReplicator(null);
+        }
         persistentState.saveState(currentTerm, votedFor);
         resetElectionTimer();
+    }
+
+    /**
+     * Periodically apply committed entries to the state machine
+     */
+    private void applyCommittedEntries() {
+        if (state == RaftState.FOLLOWER || state == RaftState.CANDIDATE) {
+            followerReplicator.updateState((int) currentTerm, state);
+            followerReplicator.applyCommittedEntries();
+        }
     }
 
     // Getters for tests and instrumentation
     public String getNodeId() {
         return nodeId;
+    }
+
+    public KeyValueStore getKvStore() {
+        return kvStore;
+    }
+
+    public RaftLog getRaftLog() {
+        return raftLog;
     }
 
     public int getPort() {
