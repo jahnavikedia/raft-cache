@@ -1,6 +1,8 @@
 package com.distributed.cache;
 
 import com.distributed.cache.raft.RaftNode;
+import com.distributed.cache.raft.api.CacheRESTServer;
+import com.distributed.cache.raft.config.NodeConfiguration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -12,33 +14,52 @@ public class Main {
 
     public static void main(String[] args) {
         logger.info("Starting Distributed Raft Cache...");
-        
-        // Parse command line arguments
-        if (args.length < 2) {
-            System.err.println("Usage: java -jar raft-cache.jar <node-id> <port>");
-            System.err.println("Example: java -jar raft-cache.jar node1 8001");
-            System.exit(1);
-        }
-        
-        String nodeId = args[0];
-        int port = Integer.parseInt(args[1]);
-        
+
         try {
-            // Initialize and start the Raft node
-            RaftNode node = new RaftNode(nodeId, port);
+            // ----------------------------------------------------------
+            // Parse command line arguments
+            // ----------------------------------------------------------
+            String configPath = null;
+
+            if (args.length >= 2 && args[0].equals("--config")) {
+                configPath = args[1];
+            } else {
+                System.err.println("Usage: java -jar raft-cache.jar --config <path-to-yaml>");
+                System.exit(1);
+            }
+
+            // ----------------------------------------------------------
+            // Load node configuration
+            // ----------------------------------------------------------
+            NodeConfiguration config = NodeConfiguration.load(configPath);
+            logger.info("Loaded configuration for {}: raftPort={}, httpPort={}, dataDir={}",
+                    config.getNodeId(), config.getRaftPort(), config.getHttpPort(), config.getDataDir());
+
+            // ----------------------------------------------------------
+            // Initialize Raft node and HTTP server
+            // ----------------------------------------------------------
+            RaftNode node = new RaftNode(config.getNodeId(), config.getRaftPort());
+            node.configurePeers(config.getPeerMap());
             node.start();
-            
-            logger.info("Node {} started on port {}", nodeId, port);
-            
-            // Keep the application running
+
+            CacheRESTServer httpServer = new CacheRESTServer(node, config.getHttpPort(), config.getHttpPeerMap());
+            httpServer.start();
+
+            logger.info("Node {} started successfully (Raft on port {}, HTTP on port {})",
+                    config.getNodeId(), config.getRaftPort(), config.getHttpPort());
+
+            // ----------------------------------------------------------
+            // Handle graceful shutdown
+            // ----------------------------------------------------------
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-                logger.info("Shutting down node {}...", nodeId);
+                logger.info("Shutting down node {}...", config.getNodeId());
+                httpServer.stop();
                 node.shutdown();
             }));
-            
-            // Keep main thread alive
+
+            // Keep the JVM running
             Thread.currentThread().join();
-            
+
         } catch (Exception e) {
             logger.error("Failed to start node: {}", e.getMessage(), e);
             System.exit(1);

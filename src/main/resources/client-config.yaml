@@ -1,0 +1,7 @@
+nodes:
+    - id: node-1
+      httpAddress: http://localhost:8081
+    - id: node-2
+      httpAddress: http://localhost:8082
+    - id: node-3
+      httpAddress: http://localhost:8083

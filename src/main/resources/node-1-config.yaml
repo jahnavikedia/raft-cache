@@ -1,0 +1,26 @@
+node:
+    id: node-1
+    raftPort: 9091
+    httpPort: 8081
+    dataDir: ./data/node-1
+
+cluster:
+    nodes:
+        - id: node-1
+          raftAddress: localhost:9091
+          httpAddress: http://localhost:8081
+        - id: node-2
+          raftAddress: localhost:9092
+          httpAddress: http://localhost:8082
+        - id: node-3
+          raftAddress: localhost:9093
+          httpAddress: http://localhost:8083
+
+    electionTimeoutMin: 1500
+    electionTimeoutMax: 3000
+    heartbeatInterval: 500
+
+http:
+    maxRequestSize: 1048576
+    requestTimeout: 5000
+    connectionPoolSize: 10
