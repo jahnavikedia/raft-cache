@@ -28,6 +28,7 @@ public class KeyValueStore {
     private LeaderReplicator replicator;
     private final String nodeId;
     private int currentTerm;
+    private final AccessTracker accessTracker;
 
     public KeyValueStore(String nodeId, RaftLog raftLog) {
         this.nodeId = nodeId;
@@ -36,8 +37,10 @@ public class KeyValueStore {
         this.raftLog = raftLog;
         this.replicator = null;
         this.currentTerm = 0;
+        this.accessTracker = new AccessTracker();
+        this.accessTracker.start();
 
-        logger.info("KeyValueStore initialized for node {}", nodeId);
+        logger.info("KeyValueStore initialized for node {} with access tracking", nodeId);
     }
 
     /**
@@ -115,6 +118,12 @@ public class KeyValueStore {
      */
     public String get(String key) {
         String value = data.get(key);
+
+        // Record access for ML-based eviction
+        if (value != null) {
+            accessTracker.recordAccess(key);
+        }
+
         logger.debug("GET request: key='{}', value='{}'", key, value);
         return value;
     }
@@ -243,6 +252,21 @@ public class KeyValueStore {
      */
     public int size() {
         return data.size();
+    }
+
+    /**
+     * Get the access tracker for statistics and ML predictions.
+     */
+    public AccessTracker getAccessTracker() {
+        return accessTracker;
+    }
+
+    /**
+     * Shutdown the key-value store and clean up resources.
+     */
+    public void shutdown() {
+        accessTracker.stop();
+        logger.info("KeyValueStore shutdown for node {}", nodeId);
     }
 
     /**

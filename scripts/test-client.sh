@@ -11,3 +11,4 @@ if [ ! -f "$JAR_FILE" ]; then
 fi
 
 java -cp $JAR_FILE com.distributed.cache.raft.client.CacheClient "$@"
+=

@@ -44,3 +44,12 @@ data/
 data/node-*/
 **/data/
 **/data/node-*/
+
+node_modules/*
+
+# ML Service
+ml-service/venv/
+ml-service/__pycache__/
+ml-service/*.pkl
+ml-service/*.pyc
+ml-service/.pytest_cache/

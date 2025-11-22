@@ -87,6 +87,22 @@ public class CacheRESTServer {
             }
         });
 
+        // GET /cache/access-stats - Get access statistics for ML-based eviction
+        // IMPORTANT: This must come BEFORE /cache/{key} to avoid path matching issues
+        app.get("/cache/access-stats", ctx -> {
+            try {
+                ctx.json(Map.of(
+                    "nodeId", raftNode.getNodeId(),
+                    "trackedKeys", kvStore.getAccessTracker().getTrackedKeyCount(),
+                    "stats", kvStore.getAccessTracker().getAllStatsAsMaps()
+                ));
+            } catch (Exception e) {
+                logger.error("Failed to get access stats", e);
+                ctx.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .json(Map.of("error", e.getMessage()));
+            }
+        });
+
         // GET /cache/{key}
         app.get("/cache/{key}", ctx -> {
             String key = ctx.pathParam("key");
