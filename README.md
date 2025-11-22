@@ -354,11 +354,3 @@ This is an academic project demonstrating distributed systems concepts. For ques
 - "Rethink the Linearizability Constraints of Raft" - Performance optimizations for reads
 - Raft Visualization: [thesecretlivesofdata.com/raft](https://thesecretlivesofdata.com/raft/)
 
-## License
-
-MIT License - Academic Project
-
----
-
-**Status**: ✅ Production-ready core features with comprehensive testing
-**Last Updated**: November 2025
