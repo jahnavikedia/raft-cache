@@ -2,6 +2,9 @@ package com.distributed.cache.raft;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * Represents messages exchanged between Raft nodes
  */
@@ -53,8 +56,15 @@ public class Message {
     @JsonProperty("leaderCommit")
     private long leaderCommit;
 
+    @JsonProperty("entries")
+    private List<LogEntry> entries;
+
+    @JsonProperty("matchIndex")
+    private long matchIndex;
+
     // Default constructor for Jackson
     public Message() {
+        this.entries = new ArrayList<>();
     }
 
     public Message(MessageType type, long term, String senderId) {
@@ -159,6 +169,22 @@ public class Message {
 
     public void setLeaderCommit(long leaderCommit) {
         this.leaderCommit = leaderCommit;
+    }
+
+    public List<LogEntry> getEntries() {
+        return entries != null ? entries : new ArrayList<>();
+    }
+
+    public void setEntries(List<LogEntry> entries) {
+        this.entries = entries;
+    }
+
+    public long getMatchIndex() {
+        return matchIndex;
+    }
+
+    public void setMatchIndex(long matchIndex) {
+        this.matchIndex = matchIndex;
     }
 
     @Override

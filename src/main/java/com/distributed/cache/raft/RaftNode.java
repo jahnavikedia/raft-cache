@@ -403,13 +403,14 @@ public class RaftNode {
 
     private synchronized void handleAppendEntries(Message message) {
         updateTerm(message.getTerm());
-        logger.debug("Node {} received AppendEntries from {} (term={}, our_term={})",
-                nodeId, message.getLeaderId(), message.getTerm(), currentTerm);
+        logger.debug("Node {} received AppendEntries from {} (term={}, our_term={}, entries={})",
+                nodeId, message.getLeaderId(), message.getTerm(), currentTerm, message.getEntries().size());
 
         heartbeatsReceived++;
         lastHeartbeatReceived = System.currentTimeMillis();
 
         boolean success = true;
+        long matchIndex = 0;
         String responseReason = "accepted";
 
         if (message.getTerm() < currentTerm) {
@@ -428,18 +429,45 @@ public class RaftNode {
                 becomeFollower();
             }
 
-            if (message.getLeaderCommit() > commitIndex) {
-                long oldCommitIndex = commitIndex;
-                commitIndex = message.getLeaderCommit();
-                logger.debug("Updated commitIndex from {} to {}", oldCommitIndex, commitIndex);
+            // Process log entries using FollowerReplicator
+            if (!message.getEntries().isEmpty() || message.getPrevLogIndex() > 0) {
+                // Convert Message to AppendEntriesRequest
+                com.distributed.cache.replication.AppendEntriesRequest request =
+                    new com.distributed.cache.replication.AppendEntriesRequest(
+                        (int) message.getTerm(),
+                        message.getLeaderId(),
+                        message.getPrevLogIndex(),
+                        (int) message.getPrevLogTerm(),
+                        message.getEntries(),
+                        message.getLeaderCommit()
+                    );
+
+                // Let FollowerReplicator handle it
+                com.distributed.cache.replication.AppendEntriesResponse followerResponse =
+                    followerReplicator.handleAppendEntries(request);
+
+                success = followerResponse.isSuccess();
+                matchIndex = followerResponse.getMatchIndex();
+                responseReason = success ? "log replicated" : "log inconsistency";
+            } else {
+                // Just a heartbeat, update commitIndex if needed
+                if (message.getLeaderCommit() > commitIndex) {
+                    long oldCommitIndex = commitIndex;
+                    commitIndex = message.getLeaderCommit();
+                    raftLog.setCommitIndex(commitIndex);
+                    logger.debug("Updated commitIndex from {} to {}", oldCommitIndex, commitIndex);
+                }
+                matchIndex = raftLog.getLastIndex();
             }
         }
 
+        // Send response with matchIndex
         Message response = MessageSerializer.createHeartbeatResponse(nodeId, currentTerm, success);
+        response.setMatchIndex(matchIndex);
         networkBase.sendMessage(message.getSenderId(), response);
 
-        logger.trace("Node {} responded to heartbeat from {} with success={} ({})", nodeId, message.getLeaderId(),
-                success, responseReason);
+        logger.trace("Node {} responded to AppendEntries from {} with success={}, matchIndex={} ({})",
+                nodeId, message.getLeaderId(), success, matchIndex, responseReason);
     }
 
     private synchronized void handleAppendEntriesResponse(Message message) {
@@ -447,18 +475,24 @@ public class RaftNode {
         if (state != RaftState.LEADER)
             return;
 
-        logger.trace("Leader {} received heartbeat response from {} (success={}, term={})", nodeId,
-                message.getSenderId(), message.isSuccess(), message.getTerm());
+        logger.trace("Leader {} received AppendEntries response from {} (success={}, matchIndex={}, term={})",
+                nodeId, message.getSenderId(), message.isSuccess(), message.getMatchIndex(), message.getTerm());
 
         if (message.getTerm() > currentTerm) {
             stepDown(message.getTerm());
             return;
         }
 
-        if (message.isSuccess()) {
-            logger.trace("Follower {} acknowledged heartbeat", message.getSenderId());
-        } else {
-            logger.debug("Follower {} rejected heartbeat (term={})", message.getSenderId(), message.getTerm());
+        // Pass response to LeaderReplicator for processing
+        if (replicator != null) {
+            com.distributed.cache.replication.AppendEntriesResponse response =
+                new com.distributed.cache.replication.AppendEntriesResponse(
+                    (int) message.getTerm(),
+                    message.isSuccess(),
+                    message.getMatchIndex(),
+                    message.getSenderId()
+                );
+            replicator.handleAppendEntriesResponse(response);
         }
     }
 
@@ -589,7 +623,7 @@ public class RaftNode {
     }
 
     public long getCommitIndex() {
-        return commitIndex;
+        return raftLog.getCommitIndex();
     }
 
     public NetworkBase getNetworkBase() {

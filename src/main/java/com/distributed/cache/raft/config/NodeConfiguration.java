@@ -56,13 +56,17 @@ public class NodeConfiguration {
             conf.httpPort = (Integer) node.get("httpPort");
             conf.dataDir = (String) node.get("dataDir");
 
-            // Build peer maps
+            // Build peer maps (exclude self from peers)
             Map<String, String> peers = new java.util.LinkedHashMap<>();
             Map<String, String> httpPeers = new java.util.LinkedHashMap<>();
             var nodes = (Iterable<Map<String, Object>>) cluster.get("nodes");
             for (Map<String, Object> n : nodes) {
-                peers.put((String) n.get("id"), (String) n.get("raftAddress"));
-                httpPeers.put((String) n.get("id"), (String) n.get("httpAddress"));
+                String peerId = (String) n.get("id");
+                // Only add other nodes to peers list, not self
+                if (!peerId.equals(conf.nodeId)) {
+                    peers.put(peerId, (String) n.get("raftAddress"));
+                    httpPeers.put(peerId, (String) n.get("httpAddress"));
+                }
             }
             conf.peerMap = peers;
             conf.httpPeerMap = httpPeers;

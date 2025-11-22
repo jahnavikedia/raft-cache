@@ -128,25 +128,13 @@ public class LeaderReplicator {
             // Get entries to send
             List<LogEntry> entries = raftLog.getEntriesSince(followerNextIndex);
 
-            // Create AppendEntries request
-            AppendEntriesRequest request = new AppendEntriesRequest(
-                    currentTerm,
-                    nodeId,
-                    prevLogIndex,
-                    prevLogTerm,
-                    entries,
-                    raftLog.getCommitIndex()
-            );
-
-            // Send via existing Message infrastructure (we'll need to extend Message class)
-            // For now, we'll use the existing APPEND_ENTRIES message type
+            // Create and send AppendEntries message with log entries
             Message message = new Message(Message.MessageType.APPEND_ENTRIES, currentTerm, nodeId);
             message.setLeaderId(nodeId);
             message.setPrevLogIndex(prevLogIndex);
             message.setPrevLogTerm(prevLogTerm);
             message.setLeaderCommit(raftLog.getCommitIndex());
-            // Note: The Message class doesn't have a way to set entries yet
-            // We'll need to extend it or handle this differently
+            message.setEntries(entries); // Now we can set the entries!
 
             networkBase.sendMessage(followerId, message);
 
