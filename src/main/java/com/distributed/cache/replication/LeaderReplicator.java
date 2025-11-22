@@ -32,9 +32,11 @@ public class LeaderReplicator {
 
     private final Map<String, Long> nextIndex;
     private final Map<String, Long> matchIndex;
+    private final Map<String, Long> lastHeartbeatResponse;  // Track last successful response time
 
     private ScheduledExecutorService replicationExecutor;
     private ScheduledFuture<?> replicationTask;
+    private Runnable leaseRenewalCallback;  // Callback to renew lease on majority heartbeat
 
     /**
      * Create a new LeaderReplicator
@@ -55,15 +57,24 @@ public class LeaderReplicator {
 
         this.nextIndex = new ConcurrentHashMap<>();
         this.matchIndex = new ConcurrentHashMap<>();
+        this.lastHeartbeatResponse = new ConcurrentHashMap<>();
 
         // Initialize nextIndex and matchIndex for all followers
         long lastLogIndex = raftLog.getLastIndex();
         for (String peerId : peers.keySet()) {
             nextIndex.put(peerId, lastLogIndex + 1);
             matchIndex.put(peerId, 0L);
+            lastHeartbeatResponse.put(peerId, 0L);
         }
 
         logger.info("LeaderReplicator initialized for term {} with {} followers", currentTerm, peers.size());
+    }
+
+    /**
+     * Set callback to be invoked when majority of followers respond to heartbeat
+     */
+    public void setLeaseRenewalCallback(Runnable callback) {
+        this.leaseRenewalCallback = callback;
     }
 
     /**
@@ -170,7 +181,13 @@ public class LeaderReplicator {
             matchIndex.put(followerId, newMatchIndex);
             nextIndex.put(followerId, newMatchIndex + 1);
 
+            // Track heartbeat response time
+            lastHeartbeatResponse.put(followerId, System.currentTimeMillis());
+
             logger.debug("Follower {} matched up to index {}", followerId, newMatchIndex);
+
+            // Check if we have majority of recent heartbeats and renew lease
+            checkAndRenewLease();
 
             // Try to advance commit index
             updateCommitIndex();
@@ -185,6 +202,36 @@ public class LeaderReplicator {
                 // Immediately retry with the decremented index
                 replicateToFollower(followerId);
             }
+        }
+    }
+
+    /**
+     * Check if majority of followers have responded to heartbeat recently
+     * and invoke lease renewal callback if so.
+     */
+    private synchronized void checkAndRenewLease() {
+        if (leaseRenewalCallback == null) {
+            return;
+        }
+
+        long now = System.currentTimeMillis();
+        long recentThreshold = now - 100; // Responses within last 100ms are considered recent
+
+        // Count recent heartbeat responses
+        int recentResponses = 0;
+        for (Long lastResponse : lastHeartbeatResponse.values()) {
+            if (lastResponse >= recentThreshold) {
+                recentResponses++;
+            }
+        }
+
+        // Check if we have majority
+        int totalNodes = peers.size() + 1; // followers + leader
+        int majority = (totalNodes / 2) + 1;
+
+        if (recentResponses + 1 >= majority) { // +1 for leader itself
+            leaseRenewalCallback.run();
+            logger.trace("Lease renewed: {}/{} recent heartbeat responses", recentResponses, peers.size());
         }
     }
 

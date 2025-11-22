@@ -225,6 +225,45 @@ public class RaftLog {
     }
 
     /**
+     * Get the total number of entries in the log.
+     * Used by snapshot manager to determine when to create snapshots.
+     *
+     * @return The number of log entries
+     */
+    public long getLogSize() {
+        lock.readLock().lock();
+        try {
+            return entries.size();
+        } finally {
+            lock.readLock().unlock();
+        }
+    }
+
+    /**
+     * Delete all log entries up to and including the given index.
+     * Used after creating a snapshot to compact the log.
+     *
+     * @param upToIndex The index up to which entries should be deleted (inclusive)
+     * @return The number of entries deleted
+     */
+    public int deleteEntriesUpTo(long upToIndex) {
+        lock.writeLock().lock();
+        try {
+            int deletedCount = 0;
+            // Remove entries from the beginning up to upToIndex
+            // Since entries are 1-indexed, we need to remove entries[0] through entries[upToIndex-1]
+            while (!entries.isEmpty() && entries.get(0).getIndex() <= upToIndex) {
+                entries.remove(0);
+                deletedCount++;
+            }
+            logger.info("Deleted {} log entries up to index {}", deletedCount, upToIndex);
+            return deletedCount;
+        } finally {
+            lock.writeLock().unlock();
+        }
+    }
+
+    /**
      * Get the total number of entries in the log
      */
     public int size() {

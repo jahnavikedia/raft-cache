@@ -1,0 +1,17 @@
+node:
+  id: node2
+  raftPort: 9002
+  httpPort: 8082
+  dataDir: data/node2
+
+cluster:
+  nodes:
+    - id: node1
+      raftAddress: localhost:9001
+      httpAddress: localhost:8081
+    - id: node2
+      raftAddress: localhost:9002
+      httpAddress: localhost:8082
+    - id: node3
+      raftAddress: localhost:9003
+      httpAddress: localhost:8083

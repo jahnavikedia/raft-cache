@@ -4,6 +4,7 @@ import com.distributed.cache.raft.RaftNode;
 import com.distributed.cache.raft.RaftState;
 import com.distributed.cache.store.KeyValueStore;
 import com.distributed.cache.store.KeyValueStore.NotLeaderException;
+import com.distributed.cache.store.ReadConsistency;
 import com.google.gson.Gson;
 import io.javalin.Javalin;
 import io.javalin.http.HttpStatus;
@@ -103,16 +104,57 @@ public class CacheRESTServer {
             }
         });
 
-        // GET /cache/{key}
+        // GET /cache/{key}?consistency=[strong|lease|eventual] - Read with configurable consistency
         app.get("/cache/{key}", ctx -> {
             String key = ctx.pathParam("key");
-            String value = kvStore.get(key);
-            ctx.header("X-Raft-Role", raftNode.getState().name());
-            if (value == null) {
-                ctx.status(HttpStatus.NOT_FOUND)
-                        .json(new ClientResponse(false, null, "Key not found", raftNode.getNodeId()));
-            } else {
-                ctx.json(new ClientResponse(true, value, null, raftNode.getNodeId()));
+            String consistencyParam = ctx.queryParam("consistency");
+
+            // Parse consistency level (default to STRONG for backwards compatibility)
+            ReadConsistency consistency = ReadConsistency.STRONG;
+            if (consistencyParam != null) {
+                try {
+                    consistency = ReadConsistency.valueOf(consistencyParam.toUpperCase());
+                } catch (IllegalArgumentException e) {
+                    ctx.status(HttpStatus.BAD_REQUEST)
+                            .json(new ClientResponse(false, null,
+                                    "Invalid consistency level. Use: strong, lease, or eventual",
+                                    raftNode.getNodeId()));
+                    return;
+                }
+            }
+
+            try {
+                long startTime = System.nanoTime();
+
+                // Use the new multi-level get method
+                CompletableFuture<String> future = kvStore.get(key, consistency);
+                String value = future.get(REQUEST_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+
+                long latencyMs = (System.nanoTime() - startTime) / 1_000_000;
+
+                ctx.header("X-Raft-Role", raftNode.getState().name());
+                ctx.header("X-Consistency-Level", consistency.name());
+                ctx.header("X-Read-Latency-Ms", String.valueOf(latencyMs));
+                if (raftNode.hasValidReadLease()) {
+                    ctx.header("X-Lease-Remaining-Ms", String.valueOf(raftNode.getLeaseRemainingMs()));
+                }
+
+                if (value == null) {
+                    ctx.status(HttpStatus.NOT_FOUND)
+                            .json(new ClientResponse(false, null, "Key not found", raftNode.getNodeId()));
+                } else {
+                    ctx.json(new ClientResponse(true, value, null, raftNode.getNodeId()));
+                }
+            } catch (TimeoutException e) {
+                ctx.status(HttpStatus.SERVICE_UNAVAILABLE)
+                        .json(new ClientResponse(false, null, "Read timeout", raftNode.getNodeId()));
+            } catch (com.distributed.cache.raft.NotLeaderException e) {
+                ctx.status(HttpStatus.TEMPORARY_REDIRECT)
+                        .json(new ClientResponse(false, null, e.getMessage(), e.getCurrentLeaderId()));
+            } catch (Exception e) {
+                logger.error("GET failed", e);
+                ctx.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                        .json(new ClientResponse(false, null, e.getMessage(), raftNode.getNodeId()));
             }
         });
 
@@ -169,8 +211,14 @@ public class CacheRESTServer {
                 ctx.status(HttpStatus.SERVICE_UNAVAILABLE).result("Unhealthy");
         });
 
-        // Placeholder metrics endpoint
-        app.get("/metrics", ctx -> ctx.result("Metrics coming soon"));
+        // GET /stats - Cache statistics and eviction info
+        app.get("/stats", ctx -> {
+            Map<String, Object> stats = kvStore.getStats();
+            stats.put("nodeId", raftNode.getNodeId());
+            stats.put("role", raftNode.getState().name());
+            stats.put("currentTerm", raftNode.getCurrentTerm());
+            ctx.json(stats);
+        });
 
         app.start(httpPort);
         logger.info("CacheRESTServer started on port {}", httpPort);

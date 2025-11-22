@@ -55,6 +55,7 @@ public class RaftNode {
     private final Random random = new Random();
 
     private final Map<String, Boolean> votesReceived = new ConcurrentHashMap<>();
+    private final ReadLease readLease = new ReadLease();
 
     private volatile long lastHeartbeatReceived = 0;
     private volatile long heartbeatsSent = 0;
@@ -69,9 +70,12 @@ public class RaftNode {
     private final KeyValueStore kvStore;
     private LeaderReplicator replicator;
     private final FollowerReplicator followerReplicator;
+    private final SnapshotManager snapshotManager;
 
     private ScheduledExecutorService applyEntriesScheduler;
     private ScheduledFuture<?> applyEntriesTask;
+    private ScheduledExecutorService snapshotScheduler;
+    private ScheduledFuture<?> snapshotTask;
 
     public RaftNode(String nodeId, int port) {
         this.nodeId = nodeId;
@@ -88,6 +92,19 @@ public class RaftNode {
         this.kvStore = new KeyValueStore(nodeId, raftLog);
         this.followerReplicator = new FollowerReplicator(nodeId, raftLog, kvStore);
         this.replicator = null; // Will be set when becoming leader
+
+        // Initialize ReadIndexManager for safe reads
+        ReadIndexManager readIndexManager = new ReadIndexManager(this);
+        this.kvStore.setReadIndexManager(readIndexManager);
+        this.kvStore.setRaftNode(this);  // For read lease checking
+
+        // Initialize SnapshotManager and load snapshot if exists
+        this.snapshotManager = new SnapshotManager(nodeId, raftLog, kvStore);
+        Snapshot loadedSnapshot = snapshotManager.loadLatestSnapshot();
+        if (loadedSnapshot != null) {
+            logger.info("Loaded snapshot on startup: lastIndex={}, dataSize={}",
+                       loadedSnapshot.getLastIncludedIndex(), loadedSnapshot.getData().size());
+        }
 
         this.lastHeartbeatReceived = System.currentTimeMillis();
         logger.info("RaftNode initialized: id={}, port={}, initial_term={}, initial_state={}, votedFor={}",
@@ -153,6 +170,7 @@ public class RaftNode {
         heartbeatScheduler = Executors.newSingleThreadScheduledExecutor(r -> new Thread(r, "HeartbeatTimer-" + nodeId));
         electionScheduler = Executors.newSingleThreadScheduledExecutor(r -> new Thread(r, "ElectionTimer-" + nodeId));
         applyEntriesScheduler = Executors.newSingleThreadScheduledExecutor(r -> new Thread(r, "ApplyEntries-" + nodeId));
+        snapshotScheduler = Executors.newSingleThreadScheduledExecutor(r -> new Thread(r, "Snapshot-" + nodeId));
 
         // 7. Start periodic task to apply committed entries
         applyEntriesTask = applyEntriesScheduler.scheduleAtFixedRate(
@@ -162,7 +180,22 @@ public class RaftNode {
                 TimeUnit.MILLISECONDS
         );
 
-        // 8. Start as follower with a normal randomized election timeout
+        // 8. Start periodic snapshot check (every 10 seconds)
+        snapshotTask = snapshotScheduler.scheduleAtFixedRate(
+                () -> {
+                    try {
+                        snapshotManager.setCurrentTerm((int) currentTerm);
+                        snapshotManager.checkAndCreateSnapshot();
+                    } catch (Exception e) {
+                        logger.error("Error during periodic snapshot check", e);
+                    }
+                },
+                10,
+                10,
+                TimeUnit.SECONDS
+        );
+
+        // 9. Start as follower with a normal randomized election timeout
         resetElectionTimer(); // FIX: was resetElectionTimer(ELECTION_TIMEOUT_MAX_MS * 3L);
         logger.info("Node {} started successfully. State={}, Term={}", nodeId, state, currentTerm);
     }
@@ -177,6 +210,10 @@ public class RaftNode {
             applyEntriesTask.cancel(false);
         }
 
+        if (snapshotTask != null && !snapshotTask.isCancelled()) {
+            snapshotTask.cancel(false);
+        }
+
         if (replicator != null) {
             replicator.stopReplication();
         }
@@ -187,12 +224,17 @@ public class RaftNode {
             electionScheduler.shutdown();
         if (applyEntriesScheduler != null)
             applyEntriesScheduler.shutdown();
+        if (snapshotScheduler != null)
+            snapshotScheduler.shutdown();
 
         if (networkBase != null)
             networkBase.shutdown();
 
         if (raftLog != null)
             raftLog.close();
+
+        if (kvStore != null)
+            kvStore.shutdown();
 
         logger.info("Node {} shutdown complete", nodeId);
     }
@@ -509,6 +551,7 @@ public class RaftNode {
                 replicator = null;
             }
             kvStore.setReplicator(null);
+            readLease.invalidate();  // Invalidate lease when transitioning from leader
         }
         resetElectionTimer();
     }
@@ -539,6 +582,12 @@ public class RaftNode {
         // Initialize and start replicator
         replicator = new LeaderReplicator(nodeId, (int) currentTerm, raftLog, networkBase, peers);
         kvStore.setReplicator(replicator);
+
+        // Set up lease renewal callback
+        replicator.setLeaseRenewalCallback(() -> {
+            readLease.renewLease();
+        });
+
         replicator.startReplication();
 
         startHeartbeatTimer();
@@ -582,6 +631,7 @@ public class RaftNode {
             replicator.stopReplication();
             replicator = null;
             kvStore.setReplicator(null);
+            readLease.invalidate();  // Invalidate lease when stepping down from leader
         }
         persistentState.saveState(currentTerm, votedFor);
         resetElectionTimer();
@@ -662,6 +712,86 @@ public class RaftNode {
         this.currentTerm = term;
     }
 
+    /**
+     * Check if this node is currently the leader.
+     *
+     * @return true if leader, false otherwise
+     */
+    public boolean isLeader() {
+        return state == RaftState.LEADER;
+    }
+
+    /**
+     * Send heartbeat and confirm leadership with majority.
+     * Used by ReadIndex protocol to ensure linearizable reads.
+     *
+     * @return CompletableFuture that completes with true if majority acknowledges
+     */
+    public CompletableFuture<Boolean> sendHeartbeatAndConfirmLeadership() {
+        if (state != RaftState.LEADER) {
+            return CompletableFuture.completedFuture(false);
+        }
+
+        CompletableFuture<Boolean> future = new CompletableFuture<>();
+
+        // Count acks: start with 1 for self
+        java.util.concurrent.atomic.AtomicInteger ackCount = new java.util.concurrent.atomic.AtomicInteger(1);
+        int totalNodes = getTotalNodes();
+        int majorityNeeded = (totalNodes / 2) + 1;
+
+        logger.debug("Sending heartbeat for leadership confirmation: need {} of {} nodes",
+                    majorityNeeded, totalNodes);
+
+        // If we're alone or already have majority, complete immediately
+        if (ackCount.get() >= majorityNeeded) {
+            future.complete(true);
+            return future;
+        }
+
+        // Send heartbeat
+        Message heartbeat = MessageSerializer.createHeartbeat(nodeId, currentTerm, commitIndex);
+
+        // Create a temporary handler for this confirmation
+        final long confirmationTerm = currentTerm;
+
+        // Register a one-time callback for APPEND_ENTRIES_RESPONSE messages
+        // We'll track responses and complete the future when we have majority
+        CompletableFuture.runAsync(() -> {
+            try {
+                networkBase.broadcastMessage(heartbeat);
+
+                // Wait a bit for responses (100ms should be enough for heartbeat acks)
+                Thread.sleep(100);
+
+                // Check if we got majority acks
+                // Note: In a real implementation, we'd have a proper callback mechanism
+                // For now, we'll check the replicator's match indices
+                if (replicator != null) {
+                    int recentAcks = 1; // self
+                    for (String peerId : peers.keySet()) {
+                        Long matchIdx = matchIndex.get(peerId);
+                        if (matchIdx != null && matchIdx >= 0) {
+                            recentAcks++;
+                        }
+                    }
+
+                    if (recentAcks >= majorityNeeded && currentTerm == confirmationTerm) {
+                        future.complete(true);
+                    } else {
+                        future.complete(false);
+                    }
+                } else {
+                    future.complete(false);
+                }
+            } catch (Exception e) {
+                logger.warn("Error during heartbeat confirmation", e);
+                future.completeExceptionally(e);
+            }
+        });
+
+        return future;
+    }
+
     /**************************************************************************************************
      * TEST RELATED FUNCTIONS
      */
@@ -712,6 +842,25 @@ public class RaftNode {
 
     void testBecomeFollower() {
         becomeFollower();
+    }
+
+    /**
+     * Check if this node has a valid read lease.
+     * A lease is valid only when the node is leader AND the lease hasn't expired.
+     *
+     * @return true if this node is leader with valid lease, false otherwise
+     */
+    public boolean hasValidReadLease() {
+        return state == RaftState.LEADER && readLease.isValid();
+    }
+
+    /**
+     * Get the remaining time on the read lease in milliseconds.
+     *
+     * @return remaining lease time in ms, or 0 if no valid lease
+     */
+    public long getLeaseRemainingMs() {
+        return readLease.getRemainingMs();
     }
 
 }

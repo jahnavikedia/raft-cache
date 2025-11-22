@@ -1,225 +1,121 @@
 #!/usr/bin/env python3
 """
-Flask API for ML-based Cache Eviction Predictions
+ML Service for Cache Eviction Predictions
 
-This service provides a REST API for predicting which cache keys should be evicted
-based on their access patterns.
+This Flask service provides ML-based predictions for which cache keys
+are likely to be accessed again, helping optimize eviction decisions.
 
-Endpoints:
-- GET /health - Health check
-- POST /predict - Predict which key to evict
+Uses a RandomForest classifier trained on access pattern features.
 """
 
 from flask import Flask, request, jsonify
-from flask_cors import CORS
-import joblib
 import numpy as np
-import hashlib
-import datetime
-import os
+from sklearn.ensemble import RandomForestClassifier
+import logging
 
 app = Flask(__name__)
-CORS(app)
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# Load the trained model
-MODEL_PATH = 'cache_eviction_model.pkl'
-model = None
+# Train a simple RandomForest model on startup
+# In production, this would be loaded from a saved model file
+model = RandomForestClassifier(n_estimators=10, max_depth=5, random_state=42)
 
+# Generate synthetic training data
+# Features: [access_count, hours_since_last_access, access_count_hour, access_count_day, avg_interval_hours]
+# Label: will_be_accessed (1 = likely to be accessed, 0 = unlikely)
+np.random.seed(42)
+X_train = []
+y_train = []
 
-def load_model():
-    """Load the ML model from disk."""
-    global model
-    if not os.path.exists(MODEL_PATH):
-        print(f"ERROR: Model file not found at {MODEL_PATH}")
-        print("Please run train_model.py first to generate the model.")
-        return False
+# Generate positive examples (keys likely to be accessed)
+for _ in range(100):
+    access_count = np.random.randint(10, 100)
+    hours_since_last = np.random.uniform(0, 2)  # Recently accessed
+    access_hour = np.random.randint(5, 50)
+    access_day = np.random.randint(20, 200)
+    avg_interval = np.random.uniform(0.1, 2)  # Frequent accesses
+    X_train.append([access_count, hours_since_last, access_hour, access_day, avg_interval])
+    y_train.append(1)
 
-    try:
-        model = joblib.load(MODEL_PATH)
-        print(f"Model loaded successfully from {MODEL_PATH}")
-        return True
-    except Exception as e:
-        print(f"ERROR: Failed to load model: {e}")
-        return False
+# Generate negative examples (keys unlikely to be accessed)
+for _ in range(100):
+    access_count = np.random.randint(1, 20)
+    hours_since_last = np.random.uniform(5, 48)  # Not accessed recently
+    access_hour = np.random.randint(0, 5)
+    access_day = np.random.randint(1, 30)
+    avg_interval = np.random.uniform(5, 24)  # Infrequent accesses
+    X_train.append([access_count, hours_since_last, access_hour, access_day, avg_interval])
+    y_train.append(0)
 
-
-def hash_key(key):
-    """Hash a key to a numeric value between 0 and 1."""
-    return int(hashlib.md5(key.encode()).hexdigest(), 16) % 10000 / 10000.0
-
-
-def extract_features(key, access_history, current_time):
-    """
-    Extract features from access history for a single key.
-
-    Args:
-        key: The cache key
-        access_history: List of access timestamps (in milliseconds)
-        current_time: Current timestamp (in milliseconds)
-
-    Returns:
-        Dictionary of features
-    """
-    current_time_ms = current_time
-    current_datetime = datetime.datetime.fromtimestamp(current_time_ms / 1000.0)
-
-    # Key hash
-    key_hash_val = hash_key(key)
-
-    # Calculate hours since last access
-    if access_history and len(access_history) > 0:
-        last_access_ms = max(access_history)
-        hours_since_last_access = (current_time_ms - last_access_ms) / (1000.0 * 3600.0)
-    else:
-        hours_since_last_access = 168  # Default to 1 week if never accessed
-
-    # Count accesses in last hour
-    one_hour_ago = current_time_ms - (60 * 60 * 1000)
-    access_count_hour = sum(1 for ts in access_history if ts >= one_hour_ago)
-
-    # Count accesses in last day
-    one_day_ago = current_time_ms - (24 * 60 * 60 * 1000)
-    access_count_day = sum(1 for ts in access_history if ts >= one_day_ago)
-
-    # Time features
-    hour_of_day = current_datetime.hour
-    day_of_week = current_datetime.weekday()
-
-    return {
-        'key_hash': key_hash_val,
-        'hours_since_last_access': min(hours_since_last_access, 168),
-        'access_count_hour': access_count_hour,
-        'access_count_day': access_count_day,
-        'hour_of_day': hour_of_day,
-        'day_of_week': day_of_week
-    }
+# Train the model
+model.fit(X_train, y_train)
+logger.info("ML model trained with {} samples".format(len(X_train)))
 
 
 @app.route('/health', methods=['GET'])
 def health():
-    """Health check endpoint."""
-    if model is None:
-        return jsonify({'status': 'unhealthy', 'error': 'Model not loaded'}), 503
-
-    return jsonify({'status': 'healthy', 'model': MODEL_PATH})
+    """Health check endpoint"""
+    return jsonify({"status": "healthy"}), 200
 
 
 @app.route('/predict', methods=['POST'])
 def predict():
     """
-    Predict which key should be evicted.
-
-    Request body:
-    {
-        "keys": ["key1", "key2", "key3"],
-        "accessHistory": {
-            "key1": [timestamp1, timestamp2, ...],
-            "key2": [...],
-            "key3": [...]
-        },
-        "currentTime": timestamp_ms
-    }
-
-    Response:
-    {
-        "evictKey": "key_to_evict",
-        "confidence": 0.92,
-        "predictions": [
-            {"key": "key1", "probability": 0.85, "willBeAccessed": true},
-            {"key": "key2", "probability": 0.12, "willBeAccessed": false},
-            ...
-        ]
-    }
+    Predict which keys are likely to be accessed again.
     """
-    if model is None:
-        return jsonify({'error': 'Model not loaded'}), 503
-
     try:
         data = request.get_json()
+        keys = data.get('keys', [])
 
-        # Validate request
-        if not data or 'keys' not in data or 'accessHistory' not in data:
-            return jsonify({'error': 'Invalid request format'}), 400
+        if not keys:
+            return jsonify({"error": "No keys provided"}), 400
 
-        keys = data['keys']
-        access_history = data.get('accessHistory', {})
-        current_time = data.get('currentTime', int(datetime.datetime.now().timestamp() * 1000))
-
-        if not keys or len(keys) == 0:
-            return jsonify({'error': 'No keys provided'}), 400
-
-        # Extract features for each key
         predictions = []
-        feature_columns = [
-            'key_hash',
-            'hours_since_last_access',
-            'access_count_hour',
-            'access_count_day',
-            'hour_of_day',
-            'day_of_week'
-        ]
+        current_time_ms = max([k.get('last_access_ms', 0) for k in keys]) if keys else 0
 
-        for key in keys:
-            key_history = access_history.get(key, [])
-            features = extract_features(key, key_history, current_time)
+        for key_data in keys:
+            key = key_data.get('key')
+            access_count = key_data.get('access_count', 0)
+            last_access_ms = key_data.get('last_access_ms', 0)
+            access_count_hour = key_data.get('access_count_hour', 0)
+            access_count_day = key_data.get('access_count_day', 0)
+            avg_interval_ms = key_data.get('avg_interval_ms', 0)
 
-            # Convert to numpy array in correct order
-            X = np.array([[features[col] for col in feature_columns]])
+            # Calculate hours since last access
+            hours_since_last = (current_time_ms - last_access_ms) / (1000 * 3600) if last_access_ms > 0 else 999
 
-            # Predict probability of being accessed
-            proba = model.predict_proba(X)[0]
-            will_be_accessed_prob = proba[1]  # Probability of class 1 (will be accessed)
+            # Convert average interval to hours
+            avg_interval_hours = avg_interval_ms / (1000 * 3600) if avg_interval_ms > 0 else 999
+
+            # Prepare features for prediction
+            features = np.array([[
+                access_count,
+                hours_since_last,
+                access_count_hour,
+                access_count_day,
+                avg_interval_hours
+            ]])
+
+            # Get prediction probability
+            proba = model.predict_proba(features)[0]
+            probability = float(proba[1])  # Probability of being accessed (class 1)
+            will_be_accessed = probability >= 0.5
 
             predictions.append({
-                'key': key,
-                'probability': float(will_be_accessed_prob),
-                'willBeAccessed': bool(will_be_accessed_prob >= 0.5)
+                "key": key,
+                "probability": round(probability, 4),
+                "willBeAccessed": will_be_accessed
             })
 
-        # Sort by probability (ascending) - lowest probability should be evicted
-        predictions.sort(key=lambda x: x['probability'])
-
-        # The key with lowest probability of being accessed should be evicted
-        evict_key = predictions[0]['key']
-        evict_probability = predictions[0]['probability']
-        confidence = 1.0 - evict_probability  # Confidence = probability it won't be accessed
-
-        return jsonify({
-            'evictKey': evict_key,
-            'confidence': float(confidence),
-            'predictions': predictions
-        })
+        logger.info("Generated {} predictions".format(len(predictions)))
+        return jsonify({"predictions": predictions}), 200
 
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-
-def main():
-    """Main entry point."""
-    print("=" * 60)
-    print("Cache Eviction ML Service")
-    print("=" * 60)
-    print()
-
-    # Load model
-    if not load_model():
-        print("Failed to load model. Exiting.")
-        print("Please run: python train_model.py")
-        return
-
-    print()
-    print("Starting Flask server on http://localhost:5000")
-    print()
-    print("Endpoints:")
-    print("  GET  /health  - Health check")
-    print("  POST /predict - Predict which key to evict")
-    print()
-    print("=" * 60)
-    print()
-
-    # Run Flask app
-    app.run(host='0.0.0.0', port=5001, debug=True)
+        logger.error("Prediction error: {}".format(str(e)))
+        return jsonify({"error": str(e)}), 500
 
 
 if __name__ == '__main__':
-    main()
+    logger.info("Starting ML Service on port 5001...")
+    app.run(host='0.0.0.0', port=5001, debug=False)
