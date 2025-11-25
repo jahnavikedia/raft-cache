@@ -12,6 +12,9 @@ This project implements a distributed key-value cache with:
 - **Multiple Read Consistency Levels**: STRONG, LEASE, and EVENTUAL
 - **High Availability**: Automatic leader election and follower recovery
 
+<img width="4983" height="10936" alt="NotebookLM Mind Map" src="https://github.com/user-attachments/assets/206b2f19-9d2a-4920-8b0e-a01c0a2656bf" />
+
+
 ## Features
 
 ### Core Capabilities
