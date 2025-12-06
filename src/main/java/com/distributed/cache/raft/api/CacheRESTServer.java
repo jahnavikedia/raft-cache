@@ -49,7 +49,10 @@ public class CacheRESTServer {
 
     /** Start HTTP server and register routes. */
     public void start() {
-        app = Javalin.create(conf -> conf.http.defaultContentType = "application/json");
+        app = Javalin.create(conf -> {
+            conf.http.defaultContentType = "application/json";
+            conf.plugins.enableCors(cors -> cors.add(it -> it.anyHost()));
+        });
 
         // POST /cache/{key} → create/update key
         app.post("/cache/{key}", ctx -> {
@@ -93,18 +96,18 @@ public class CacheRESTServer {
         app.get("/cache/access-stats", ctx -> {
             try {
                 ctx.json(Map.of(
-                    "nodeId", raftNode.getNodeId(),
-                    "trackedKeys", kvStore.getAccessTracker().getTrackedKeyCount(),
-                    "stats", kvStore.getAccessTracker().getAllStatsAsMaps()
-                ));
+                        "nodeId", raftNode.getNodeId(),
+                        "trackedKeys", kvStore.getAccessTracker().getTrackedKeyCount(),
+                        "stats", kvStore.getAccessTracker().getAllStatsAsMaps()));
             } catch (Exception e) {
                 logger.error("Failed to get access stats", e);
                 ctx.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .json(Map.of("error", e.getMessage()));
+                        .json(Map.of("error", e.getMessage()));
             }
         });
 
-        // GET /cache/{key}?consistency=[strong|lease|eventual] - Read with configurable consistency
+        // GET /cache/{key}?consistency=[strong|lease|eventual] - Read with configurable
+        // consistency
         app.get("/cache/{key}", ctx -> {
             String key = ctx.pathParam("key");
             String consistencyParam = ctx.queryParam("consistency");
@@ -218,6 +221,17 @@ public class CacheRESTServer {
             stats.put("role", raftNode.getState().name());
             stats.put("currentTerm", raftNode.getCurrentTerm());
             ctx.json(stats);
+        });
+
+        // GET /raft/log - Get all log entries
+        app.get("/raft/log", ctx -> {
+            try {
+                ctx.json(raftNode.getRaftLog().getAllEntries());
+            } catch (Exception e) {
+                logger.error("Failed to get raft log", e);
+                ctx.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                        .json(Map.of("error", e.getMessage()));
+            }
         });
 
         app.start(httpPort);

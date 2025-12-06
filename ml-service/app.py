@@ -13,7 +13,10 @@ import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 import logging
 
+from flask_cors import CORS
+
 app = Flask(__name__)
+CORS(app)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
