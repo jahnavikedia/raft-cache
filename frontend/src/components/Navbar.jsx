@@ -5,8 +5,8 @@ const Navbar = ({ activePage, setActivePage }) => {
     { id: 'election', label: 'Raft Election', icon: Crown },
     { id: 'replication', label: 'Log Replication', icon: GitBranch },
     { id: 'cache', label: 'Cache Operations', icon: Database },
-    { id: 'performance', label: 'Performance', icon: Clock },
     { id: 'ml', label: 'ML Eviction', icon: Brain },
+    { id: 'performance', label: 'Performance', icon: Clock },
   ]
 
   return (

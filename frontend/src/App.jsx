@@ -137,6 +137,13 @@ function App() {
           </div>
         )
 
+      case 'ml':
+        return (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+            <EvictionDemo nodes={nodes} />
+          </div>
+        )
+
       case 'performance':
         return (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
@@ -153,13 +160,6 @@ function App() {
               <Zap size={16} /> Performance & Read Leases
             </h2>
             <LatencyComparison nodes={nodes} testKey={testKey} />
-          </div>
-        )
-
-      case 'ml':
-        return (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-            <EvictionDemo nodes={nodes} />
           </div>
         )
 
