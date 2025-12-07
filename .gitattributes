@@ -8,3 +8,6 @@ scripts/* linguist-detectable=false
 *.lock linguist-generated
 package-lock.json linguist-generated
 dump.rdb binary
+
+# Ensure Java is detected
+*.java linguist-detectable=true
