@@ -2,8 +2,13 @@ import React, { useState } from 'react'
 import { Send, Zap, Trash2, RefreshCw, Database } from 'lucide-react'
 import axios from 'axios'
 
-const Controls = ({ nodes, onOperationComplete }) => {
+const Controls = ({ nodes, onOperationComplete, onKeyChange }) => {
   const [key, setKey] = useState('key1')
+
+  const handleKeyChange = (newKey) => {
+    setKey(newKey)
+    if (onKeyChange) onKeyChange(newKey)
+  }
   const [value, setValue] = useState('value1')
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState(null)
@@ -69,37 +74,62 @@ const Controls = ({ nodes, onOperationComplete }) => {
 
   const generateTraffic = async () => {
     setLoading(true)
-    setResult({ success: true, message: "Generating traffic pattern..." })
-    
+    setResult({ success: true, message: "Generating realistic traffic pattern..." })
+
     try {
-        // Write keys first to ensure they exist
         const leader = nodes.find(n => n.state === 'LEADER' && n.active) || nodes[0]
         const baseUrl = `http://localhost:${leader.port}`
 
-        // Write 10 keys (key1 to key10)
+        // Phase 1: Create keys with different values
+        setResult({ success: true, message: "Phase 1/4: Creating keys..." })
         for (let i = 1; i <= 10; i++) {
-            await axios.post(`${baseUrl}/cache/key${i}`, { 
-                value: i <= 5 ? "hot" : "cold", 
-                clientId: "traffic", 
-                sequenceNumber: Date.now() 
+            await axios.post(`${baseUrl}/cache/key${i}`, {
+                value: `value_${i}_${Date.now()}`,
+                clientId: "traffic-gen",
+                sequenceNumber: Date.now() + i
             })
         }
 
-        // Access key1-key5 frequently (Hot)
-        for(let i=0; i<5; i++) {
-            for (let k = 1; k <= 5; k++) {
-                await axios.get(`${baseUrl}/cache/key${k}`)
+        // Phase 2: Heavy access on "hot" keys (key1, key2, key3)
+        setResult({ success: true, message: "Phase 2/4: Creating HOT keys (key1-3)..." })
+        for (let round = 0; round < 15; round++) {
+            // Random reads on hot keys
+            const hotKey = `key${Math.floor(Math.random() * 3) + 1}`
+            await axios.get(`${baseUrl}/cache/${hotKey}?consistency=eventual`)
+
+            // Occasional writes to hot keys
+            if (round % 3 === 0) {
+                await axios.post(`${baseUrl}/cache/${hotKey}`, {
+                    value: `hot_update_${round}`,
+                    clientId: "traffic-gen",
+                    sequenceNumber: Date.now() + round
+                })
             }
         }
-        
-        // Access key6-key10 once or rarely (Cold)
-        for (let k = 6; k <= 10; k++) {
-             await axios.get(`${baseUrl}/cache/key${k}`)
+
+        // Phase 3: Medium access on "warm" keys (key4, key5)
+        setResult({ success: true, message: "Phase 3/4: Creating WARM keys (key4-5)..." })
+        for (let round = 0; round < 5; round++) {
+            const warmKey = `key${Math.floor(Math.random() * 2) + 4}`
+            await axios.get(`${baseUrl}/cache/${warmKey}?consistency=eventual`)
         }
-        
-        setResult({ success: true, message: "Traffic generation complete (10 keys). Check ML Stats." })
-    } catch {
-        setResult({ success: false, message: "Traffic generation failed" })
+
+        // Phase 4: Cold keys (key6-10) - accessed only once at creation
+        setResult({ success: true, message: "Phase 4/4: COLD keys (key6-10) left idle..." })
+        // No additional access - they stay cold
+
+        // Final burst on hot keys to make recency clear
+        for (let i = 1; i <= 3; i++) {
+            await axios.get(`${baseUrl}/cache/key${i}?consistency=eventual`)
+        }
+
+        setResult({
+            success: true,
+            message: "Traffic complete! HOT: key1-3 (high access), WARM: key4-5 (medium), COLD: key6-10 (low). Click 'Analyze Eviction' to see ML predictions."
+        })
+        onOperationComplete()
+    } catch (e) {
+        setResult({ success: false, message: `Traffic generation failed: ${e.message}` })
     } finally {
         setLoading(false)
     }
@@ -131,7 +161,7 @@ const Controls = ({ nodes, onOperationComplete }) => {
         <input 
           type="text" 
           value={key} 
-          onChange={e => setKey(e.target.value)}
+          onChange={e => handleKeyChange(e.target.value)}
           placeholder="Key"
           style={{ 
             background: 'rgba(255,255,255,0.05)', 

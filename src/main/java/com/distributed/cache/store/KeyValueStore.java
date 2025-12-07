@@ -369,6 +369,7 @@ public class KeyValueStore {
 
                 case DELETE:
                     data.remove(command.getKey());
+                    accessTracker.removeKey(command.getKey());  // Remove from access tracking
                     logger.info("Applied DELETE: key='{}'", command.getKey());
                     break;
 

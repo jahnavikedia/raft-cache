@@ -2,28 +2,35 @@ import React from 'react'
 import { Scroll, Terminal } from 'lucide-react'
 
 const LogViewer = ({ logs }) => {
+  // Reverse logs to show recent first
+  const reversedLogs = [...logs].reverse()
+
   return (
     <div className="card" style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem', borderBottom: '1px solid var(--border-color)', paddingBottom: '1rem' }}>
         <Terminal size={20} color="var(--accent-green)" />
         <h2 style={{ margin: 0, fontSize: '1.25rem' }}>Raft Log</h2>
+        <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginLeft: '0.5rem' }}>
+          ({logs.length} entries)
+        </span>
       </div>
-      
-      <div style={{ 
-        flex: 1, 
-        overflowY: 'auto', 
-        fontFamily: 'monospace', 
+
+      <div style={{
+        maxHeight: '300px',
+        overflowY: 'auto',
+        fontFamily: 'monospace',
         fontSize: '0.85rem',
         display: 'flex',
         flexDirection: 'column',
-        gap: '0.5rem'
+        gap: '0.5rem',
+        paddingRight: '0.5rem'
       }}>
-        {logs.length === 0 ? (
+        {reversedLogs.length === 0 ? (
           <div style={{ color: 'var(--text-secondary)', fontStyle: 'italic', textAlign: 'center', marginTop: '2rem' }}>
             No log entries yet.
           </div>
         ) : (
-          logs.map((log, i) => {
+          reversedLogs.map((log, i) => {
             // Parse command if possible (e.g., "SET key=value")
             let action = "UNKNOWN"
             let details = log.command

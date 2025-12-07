@@ -67,36 +67,17 @@ const MLStats = ({ prediction, setPrediction, nodes }) => {
       </div>
 
       {prediction ? (
-        <div style={{ 
-          background: 'rgba(255, 255, 255, 0.03)', 
-          borderRadius: '8px', 
+        <div style={{
+          background: 'rgba(255, 255, 255, 0.03)',
+          borderRadius: '8px',
           padding: '1rem',
-          border: '1px solid var(--border-color)'
+          border: '1px solid var(--border-color)',
+          textAlign: 'center'
         }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
-            <span style={{ color: 'var(--text-secondary)' }}>Recommended Eviction:</span>
-            <span style={{ fontWeight: 'bold', color: 'var(--warning)', fontSize: '1.1rem' }}>{prediction.key}</span>
-          </div>
-          
-          <div style={{ marginBottom: '1rem' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', marginBottom: '0.25rem' }}>
-              <span>Re-access Probability</span>
-              <span>{(prediction.probability * 100).toFixed(1)}%</span>
-            </div>
-            <div style={{ width: '100%', height: '6px', background: 'rgba(255,255,255,0.1)', borderRadius: '3px', overflow: 'hidden' }}>
-              <div style={{ 
-                width: `${prediction.probability * 100}%`, 
-                height: '100%', 
-                background: prediction.probability > 0.5 ? 'var(--success)' : 'var(--error)',
-                transition: 'width 0.5s ease'
-              }} />
-            </div>
-          </div>
-
-          <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', fontStyle: 'italic', lineHeight: '1.4' }}>
-            {prediction.probability < 0.3 
-              ? "High confidence: This key is rarely accessed ('cold') and is the best candidate to remove to save space." 
-              : "Low confidence: This key might still be needed. Evicting it could cause cache misses."}
+          <div style={{ color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>Recommended Eviction:</div>
+          <div style={{ fontWeight: 'bold', color: 'var(--warning)', fontSize: '1.5rem' }}>{prediction.key}</div>
+          <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: '0.75rem' }}>
+            This key has the lowest predicted re-access likelihood based on ML analysis.
           </div>
         </div>
       ) : (

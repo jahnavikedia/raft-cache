@@ -91,6 +91,21 @@ public class CacheRESTServer {
             }
         });
 
+        // GET /cache/all - Get all cache contents
+        // IMPORTANT: This must come BEFORE /cache/{key} to avoid path matching issues
+        app.get("/cache/all", ctx -> {
+            try {
+                ctx.json(Map.of(
+                        "nodeId", raftNode.getNodeId(),
+                        "role", raftNode.getState().name(),
+                        "data", kvStore.getAllData()));
+            } catch (Exception e) {
+                logger.error("Failed to get all cache data", e);
+                ctx.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                        .json(Map.of("error", e.getMessage()));
+            }
+        });
+
         // GET /cache/access-stats - Get access statistics for ML-based eviction
         // IMPORTANT: This must come BEFORE /cache/{key} to avoid path matching issues
         app.get("/cache/access-stats", ctx -> {

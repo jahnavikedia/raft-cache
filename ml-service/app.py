@@ -66,49 +66,90 @@ def health():
 def predict():
     """
     Predict which keys are likely to be accessed again.
+
+    Uses a heuristic-based scoring system that combines:
+    - Recency: How recently was the key accessed?
+    - Frequency: How often is the key accessed?
+    - Trend: Is access increasing or decreasing?
     """
     try:
         data = request.get_json()
         keys = data.get('keys', [])
+        current_time = data.get('currentTime', 0)
 
         if not keys:
             return jsonify({"error": "No keys provided"}), 400
 
         predictions = []
-        current_time_ms = max([k.get('last_access_ms', 0) for k in keys]) if keys else 0
 
+        # If no current time provided, use the max last access time
+        if current_time == 0:
+            current_time = max([k.get('last_access_ms', 0) for k in keys]) if keys else 0
+
+        # Calculate scores for each key
+        scores = []
         for key_data in keys:
             key = key_data.get('key')
             access_count = key_data.get('access_count', 0)
             last_access_ms = key_data.get('last_access_ms', 0)
             access_count_hour = key_data.get('access_count_hour', 0)
             access_count_day = key_data.get('access_count_day', 0)
-            avg_interval_ms = key_data.get('avg_interval_ms', 0)
 
-            # Calculate hours since last access
-            hours_since_last = (current_time_ms - last_access_ms) / (1000 * 3600) if last_access_ms > 0 else 999
+            # Calculate time since last access in seconds
+            time_since_last_sec = (current_time - last_access_ms) / 1000 if last_access_ms > 0 else float('inf')
 
-            # Convert average interval to hours
-            avg_interval_hours = avg_interval_ms / (1000 * 3600) if avg_interval_ms > 0 else 999
+            # Score components (higher = more likely to be accessed again)
 
-            # Prepare features for prediction
-            features = np.array([[
-                access_count,
-                hours_since_last,
-                access_count_hour,
-                access_count_day,
-                avg_interval_hours
-            ]])
+            # 1. Recency score (0-40 points): More recent = higher score
+            # Decays exponentially: score = 40 * exp(-time_seconds / 60)
+            # At 0 seconds: 40 points, at 60 seconds: ~15 points, at 120 seconds: ~5 points
+            recency_score = 40 * np.exp(-time_since_last_sec / 60) if time_since_last_sec < float('inf') else 0
 
-            # Get prediction probability
-            proba = model.predict_proba(features)[0]
-            probability = float(proba[1])  # Probability of being accessed (class 1)
-            will_be_accessed = probability >= 0.5
+            # 2. Frequency score (0-30 points): More accesses = higher score
+            # Logarithmic scale to prevent domination by very high counts
+            frequency_score = min(30, 10 * np.log1p(access_count))
+
+            # 3. Recent activity score (0-30 points): Higher hourly rate = higher score
+            # Use logarithmic scale to avoid saturation at low counts
+            hourly_rate = access_count_hour
+            activity_score = min(30, 10 * np.log1p(hourly_rate))
+
+            total_score = recency_score + frequency_score + activity_score
+
+            scores.append({
+                "key": key,
+                "total_score": total_score,
+                "recency_score": recency_score,
+                "frequency_score": frequency_score,
+                "activity_score": activity_score,
+                "access_count": access_count,
+                "time_since_last_sec": time_since_last_sec
+            })
+
+        # Convert scores to probabilities using sigmoid-like scaling
+        # Max possible score is 100 (40 recency + 30 frequency + 30 activity)
+        # Use this to get absolute probabilities, not relative
+        MAX_POSSIBLE_SCORE = 100.0
+
+        for score_data in scores:
+            # Convert score to probability: score/max gives 0-1 range
+            # Apply sigmoid-like curve for better distribution
+            raw_prob = score_data["total_score"] / MAX_POSSIBLE_SCORE
+            # Clamp to reasonable range
+            probability = max(0.05, min(0.95, raw_prob))
 
             predictions.append({
-                "key": key,
-                "probability": round(probability, 4),
-                "willBeAccessed": will_be_accessed
+                "key": score_data["key"],
+                "probability": float(round(probability, 4)),
+                "willBeAccessed": bool(probability >= 0.5),
+                "debug": {
+                    "recency": float(round(score_data["recency_score"], 2)),
+                    "frequency": float(round(score_data["frequency_score"], 2)),
+                    "activity": float(round(score_data["activity_score"], 2)),
+                    "total": float(round(score_data["total_score"], 2)),
+                    "accessCount": int(score_data["access_count"]),
+                    "secSinceAccess": float(round(score_data["time_since_last_sec"], 1))
+                }
             })
 
         logger.info("Generated {} predictions".format(len(predictions)))
@@ -116,6 +157,8 @@ def predict():
 
     except Exception as e:
         logger.error("Prediction error: {}".format(str(e)))
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 
