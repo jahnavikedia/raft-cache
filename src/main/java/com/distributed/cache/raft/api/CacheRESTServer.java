@@ -210,12 +210,13 @@ public class CacheRESTServer {
 
         // GET /status
         app.get("/status", ctx -> {
+            String leaderId = raftNode.getVotedFor();
             ctx.json(Map.of(
                     "nodeId", raftNode.getNodeId(),
                     "role", raftNode.getState().name(),
                     "currentTerm", raftNode.getCurrentTerm(),
                     "commitIndex", raftNode.getCommitIndex(),
-                    "leaderId", raftNode.getVotedFor(),
+                    "leaderId", leaderId != null ? leaderId : "",
                     "logSize", raftNode.getRaftLog().getLastIndex()));
         });
 
@@ -247,6 +248,25 @@ public class CacheRESTServer {
                 ctx.status(HttpStatus.INTERNAL_SERVER_ERROR)
                         .json(Map.of("error", e.getMessage()));
             }
+        });
+
+        // POST /admin/shutdown - Gracefully shutdown this node (for demo purposes)
+        app.post("/admin/shutdown", ctx -> {
+            logger.warn("Received shutdown request - node will terminate in 500ms");
+            ctx.json(Map.of("status", "shutting_down", "nodeId", raftNode.getNodeId()));
+
+            // Shutdown in a separate thread to allow response to be sent
+            new Thread(() -> {
+                try {
+                    Thread.sleep(500);
+                    logger.info("Executing shutdown...");
+                    raftNode.shutdown();
+                    System.exit(0);
+                } catch (Exception e) {
+                    logger.error("Error during shutdown", e);
+                    System.exit(1);
+                }
+            }).start();
         });
 
         app.start(httpPort);

@@ -1,17 +1,32 @@
-import React from 'react'
-import { Server, Crown, Database, Clock } from 'lucide-react'
+import React, { useState } from 'react'
+import { Server, Crown, Clock, Power, PlayCircle } from 'lucide-react'
 import { motion } from 'framer-motion' // eslint-disable-line no-unused-vars
+import axios from 'axios'
 
-const NodeCard = ({ node }) => {
+const NodeCard = ({ node, onNodeKilled }) => {
+  const [killing, setKilling] = useState(false)
   const isLeader = node.state === 'LEADER'
   const isDown = node.state === 'DOWN' || node.state === 'UNKNOWN'
-  
+
+  const handleKillNode = async () => {
+    if (killing) return
+    setKilling(true)
+    try {
+      await axios.post(`http://localhost:${node.port}/admin/shutdown`)
+      if (onNodeKilled) onNodeKilled(node.id)
+    } catch (e) {
+      // Expected - connection will be refused after shutdown
+      console.log(`Node ${node.id} shutting down...`)
+    }
+    setKilling(false)
+  }
+
   return (
-    <motion.div 
+    <motion.div
       className={`card ${isLeader ? 'border-blue-500' : ''}`}
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      style={{ 
+      style={{
         borderColor: isLeader ? 'var(--accent-blue)' : isDown ? 'var(--error)' : 'var(--border-color)',
         opacity: isDown ? 0.7 : 1,
         position: 'relative',
@@ -79,13 +94,13 @@ const NodeCard = ({ node }) => {
       </div>
 
       {node.hasValidReadLease && (
-        <div style={{ 
-          marginTop: '1rem', 
-          padding: '0.5rem', 
-          background: 'rgba(0, 255, 157, 0.1)', 
+        <div style={{
+          marginTop: '1rem',
+          padding: '0.5rem',
+          background: 'rgba(0, 255, 157, 0.1)',
           borderRadius: '6px',
-          display: 'flex', 
-          alignItems: 'center', 
+          display: 'flex',
+          alignItems: 'center',
           gap: '0.5rem',
           fontSize: '0.8rem',
           color: 'var(--accent-green)'
@@ -94,15 +109,56 @@ const NodeCard = ({ node }) => {
           <span>Read Lease Active ({node.leaseRemainingMs}ms)</span>
         </div>
       )}
+
+      {/* Kill Node Button */}
+      <div style={{ marginTop: '1rem', paddingTop: '0.75rem', borderTop: '1px solid var(--border-color)' }}>
+        {!isDown ? (
+          <button
+            onClick={handleKillNode}
+            disabled={killing}
+            style={{
+              width: '100%',
+              padding: '0.5rem',
+              background: 'rgba(255, 77, 77, 0.1)',
+              border: '1px solid var(--error)',
+              borderRadius: '6px',
+              color: 'var(--error)',
+              cursor: killing ? 'not-allowed' : 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '0.5rem',
+              fontSize: '0.85rem',
+              opacity: killing ? 0.6 : 1
+            }}
+          >
+            <Power size={14} />
+            {killing ? 'Killing...' : 'Kill Node'}
+          </button>
+        ) : (
+          <div style={{
+            width: '100%',
+            padding: '0.5rem',
+            background: 'rgba(255, 255, 255, 0.05)',
+            border: '1px solid var(--border-color)',
+            borderRadius: '6px',
+            color: 'var(--text-secondary)',
+            textAlign: 'center',
+            fontSize: '0.85rem'
+          }}>
+            Node Offline
+          </div>
+        )}
+      </div>
     </motion.div>
   )
 }
 
-const ClusterView = ({ nodes }) => {
+const ClusterView = ({ nodes, onNodeKilled }) => {
   return (
     <>
       {nodes.map(node => (
-        <NodeCard key={node.id} node={node} />
+        <NodeCard key={node.id} node={node} onNodeKilled={onNodeKilled} />
       ))}
     </>
   )

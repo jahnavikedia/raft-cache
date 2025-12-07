@@ -1,11 +1,13 @@
 import { useState, useEffect } from 'react'
-import { Activity, Database, Brain } from 'lucide-react'
+import { Activity, Database, Brain, Zap, Clock, Scale } from 'lucide-react'
 import ClusterView from './components/ClusterView'
 import LogViewer from './components/LogViewer'
 import Controls from './components/Controls'
 import MLStats from './components/MLStats'
 import CacheView from './components/CacheView'
 import LatencyComparison from './components/LatencyComparison'
+import ElectionDemo from './components/ElectionDemo'
+import EvictionComparison from './components/EvictionComparison'
 import axios from 'axios'
 
 function App() {
@@ -46,55 +48,133 @@ function App() {
   }, [])
 
   return (
-    <div className="container">
-      <header style={{ marginBottom: '2rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+    <div className="container" style={{ maxWidth: '1600px', padding: '2rem' }}>
+      <header style={{ marginBottom: '2.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div>
           <h1 style={{ fontSize: '2.5rem', margin: 0, background: 'linear-gradient(to right, #00f0ff, #00ff9d)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
             Raft Cache
           </h1>
           <p style={{ color: 'var(--text-secondary)', marginTop: '0.5rem' }}>
-            Distributed Consensus & ML-Driven Eviction
+            Distributed Consensus with ML-Driven Cache Eviction
           </p>
         </div>
-        <div style={{ display: 'flex', gap: '1rem' }}>
-          <div className="badge" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'rgba(255,255,255,0.05)' }}>
-            <Activity size={16} /> Live Monitor
+        <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
+          <div className="badge" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'rgba(0, 255, 157, 0.1)', color: 'var(--accent-green)', padding: '0.5rem 1rem' }}>
+            <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: 'var(--accent-green)', boxShadow: '0 0 8px var(--accent-green)' }} />
+            Live
           </div>
         </div>
       </header>
 
-      {/* Section 1: Cluster Status */}
-      <div className="grid-cols-3" style={{ marginBottom: '2rem' }}>
-        <ClusterView nodes={nodes} />
-      </div>
-
-      {/* Section 2: Cache Operations & Contents */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '2rem' }}>
-        <div className="card">
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem', borderBottom: '1px solid var(--border-color)', paddingBottom: '1rem' }}>
-            <Database size={20} color="var(--accent-pink)" />
-            <h2 style={{ margin: 0, fontSize: '1.25rem' }}>Control Panel</h2>
+      {/* Main Content */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
+          {/* Section 1: Cluster Status */}
+          <div>
+            <h2 style={{
+              fontSize: '1rem',
+              color: 'var(--text-secondary)',
+              marginBottom: '1rem',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem',
+              textTransform: 'uppercase',
+              letterSpacing: '0.05em'
+            }}>
+              <Activity size={16} /> Cluster Status
+            </h2>
+            <div className="grid-cols-3">
+              <ClusterView nodes={nodes} />
+            </div>
           </div>
-          <Controls nodes={nodes} onOperationComplete={() => {}} onKeyChange={setTestKey} />
-        </div>
-        <CacheView nodes={nodes} />
-      </div>
 
-      {/* Section 3: Read Lease & ML */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '2rem' }}>
-        <LatencyComparison nodes={nodes} testKey={testKey} />
-        <div className="card">
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem', borderBottom: '1px solid var(--border-color)', paddingBottom: '1rem' }}>
-            <Brain size={20} color="var(--accent-purple)" />
-            <h2 style={{ margin: 0, fontSize: '1.25rem' }}>ML Insights</h2>
+          {/* Section 2: Election Demo */}
+          <ElectionDemo nodes={nodes} />
+
+          {/* Section 3: Cache Operations & Contents */}
+          <div>
+            <h2 style={{
+              fontSize: '1rem',
+              color: 'var(--text-secondary)',
+              marginBottom: '1rem',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem',
+              textTransform: 'uppercase',
+              letterSpacing: '0.05em'
+            }}>
+              <Database size={16} /> Cache Operations
+            </h2>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem' }}>
+              <div className="card">
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1.5rem', borderBottom: '1px solid var(--border-color)', paddingBottom: '1rem' }}>
+                  <Database size={20} color="var(--accent-pink)" />
+                  <h2 style={{ margin: 0, fontSize: '1.25rem' }}>Control Panel</h2>
+                </div>
+                <Controls nodes={nodes} onOperationComplete={() => {}} onKeyChange={setTestKey} />
+              </div>
+              <CacheView nodes={nodes} />
+            </div>
           </div>
-          <MLStats prediction={mlPrediction} setPrediction={setMlPrediction} nodes={nodes} />
-        </div>
-      </div>
 
-      {/* Section 4: Raft Log */}
-      <div style={{ marginBottom: '2rem' }}>
-        <LogViewer logs={logs} />
+          {/* Section 4: Read Lease & ML */}
+          <div>
+            <h2 style={{
+              fontSize: '1rem',
+              color: 'var(--text-secondary)',
+              marginBottom: '1rem',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem',
+              textTransform: 'uppercase',
+              letterSpacing: '0.05em'
+            }}>
+              <Zap size={16} /> Performance & Intelligence
+            </h2>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem' }}>
+              <LatencyComparison nodes={nodes} testKey={testKey} />
+              <div className="card">
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1.5rem', borderBottom: '1px solid var(--border-color)', paddingBottom: '1rem' }}>
+                  <Brain size={20} color="var(--accent-purple)" />
+                  <h2 style={{ margin: 0, fontSize: '1.25rem' }}>ML Insights</h2>
+                </div>
+                <MLStats prediction={mlPrediction} setPrediction={setMlPrediction} nodes={nodes} />
+              </div>
+            </div>
+          </div>
+
+          {/* Section 5: LRU vs ML Eviction Comparison */}
+          <div>
+            <h2 style={{
+              fontSize: '1rem',
+              color: 'var(--text-secondary)',
+              marginBottom: '1rem',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem',
+              textTransform: 'uppercase',
+              letterSpacing: '0.05em'
+            }}>
+              <Scale size={16} /> Eviction Strategy Comparison
+            </h2>
+            <EvictionComparison nodes={nodes} />
+          </div>
+
+          {/* Section 6: Raft Log */}
+          <div>
+            <h2 style={{
+              fontSize: '1rem',
+              color: 'var(--text-secondary)',
+              marginBottom: '1rem',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem',
+              textTransform: 'uppercase',
+              letterSpacing: '0.05em'
+            }}>
+              <Clock size={16} /> Raft Consensus Log
+            </h2>
+            <LogViewer logs={logs} />
+          </div>
       </div>
     </div>
   )
