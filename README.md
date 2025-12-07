@@ -12,7 +12,7 @@ This project implements a distributed key-value cache with:
 - **Multiple Read Consistency Levels**: STRONG, LEASE, and EVENTUAL
 - **High Availability**: Automatic leader election and follower recovery
 
-<img width="4983" height="10936" alt="NotebookLM Mind Map" src="https://github.com/user-attachments/assets/206b2f19-9d2a-4920-8b0e-a01c0a2656bf" />
+<img alt="NotebookLM Mind Map" src="https://github.com/user-attachments/assets/206b2f19-9d2a-4920-8b0e-a01c0a2656bf" />
 
 
 ## Features
@@ -74,7 +74,8 @@ This project implements a distributed key-value cache with:
 ### Prerequisites
 - Java 17 or later
 - Maven 3.6+
-- Python 3.8+ (for ML service)
+- Python 3.8+ (for ML service and node manager)
+- Node.js 18+ (for demo UI)
 - jq (for test scripts)
 
 ### Build the Project
@@ -94,7 +95,22 @@ python app.py &
 cd ..
 ```
 
-### Start the Cluster
+### Start the Cluster with Demo UI
+
+```bash
+# Start the node manager (manages cluster lifecycle)
+python node-manager.py &
+
+# Start the frontend demo UI
+cd frontend
+npm install
+npm run dev &
+cd ..
+
+# Open http://localhost:5173 in your browser
+```
+
+### Alternative: Command Line Only
 
 ```bash
 # Start 3-node cluster (cleans data directory for fresh start)
@@ -157,10 +173,33 @@ curl http://localhost:8081/stats
 # Returns cache size, eviction count, ML availability, etc.
 ```
 
+## Demo UI
+
+The project includes a React-based demo UI for visualizing the Raft cluster:
+
+- **Cluster Status**: Real-time view of all nodes (Leader/Follower status, Term, Log size)
+- **Raft Election**: Visualize leader election by killing/starting nodes
+- **Log Replication**: Watch log entries replicate across the cluster
+- **Cache Operations**: Write, read, and delete cache entries
+- **Performance**: Compare read latency across consistency levels (Strong vs Lease vs Eventual)
+- **ML Eviction**: Demo ML-based cache eviction vs traditional LRU
+
 ## Project Structure
 
 ```
 raft-cache/
+├── frontend/                              # React demo UI
+│   ├── src/
+│   │   ├── App.jsx                        # Main application
+│   │   └── components/
+│   │       ├── ClusterStatus.jsx          # Node status cards
+│   │       ├── ElectionDemo.jsx           # Election visualization
+│   │       ├── ReplicationDemo.jsx        # Log replication demo
+│   │       ├── CacheView.jsx              # Cache operations
+│   │       ├── LatencyComparison.jsx      # Performance comparison
+│   │       └── EvictionDemo.jsx           # ML eviction demo
+│   └── package.json
+├── node-manager.py                        # Python cluster manager (Flask API)
 ├── src/main/java/com/distributed/cache/
 │   ├── Main.java                          # Entry point
 │   ├── raft/
@@ -337,8 +376,15 @@ peers:
 - **Gson**: JSON serialization
 - **SLF4J + Logback**: Logging
 
-### Python ML Service
-- **Flask**: REST API framework
+### React Frontend
+- **React 18**: UI framework
+- **Vite**: Build tool
+- **Axios**: HTTP client
+- **Lucide React**: Icons
+- **Tailwind CSS**: Styling
+
+### Python Services
+- **Flask**: REST API framework (ML service + node manager)
 - **scikit-learn**: RandomForest for eviction prediction
 - **NumPy**: Numerical computations
 
