@@ -641,10 +641,10 @@ public class RaftNode {
      * Periodically apply committed entries to the state machine
      */
     private void applyCommittedEntries() {
-        if (state == RaftState.FOLLOWER || state == RaftState.CANDIDATE) {
-            followerReplicator.updateState((int) currentTerm, state);
-            followerReplicator.applyCommittedEntries();
-        }
+        // Apply committed entries regardless of state - leaders need this too
+        // especially after becoming leader to catch up on any missed entries
+        followerReplicator.updateState((int) currentTerm, state);
+        followerReplicator.applyCommittedEntries();
     }
 
     // Getters for tests and instrumentation
@@ -706,6 +706,13 @@ public class RaftNode {
 
     public long getElectionsStarted() {
         return electionsStarted;
+    }
+
+    /**
+     * Get the leader replicator (only available when this node is leader)
+     */
+    public LeaderReplicator getLeaderReplicator() {
+        return replicator;
     }
 
     public synchronized void setCurrentTerm(long term) {

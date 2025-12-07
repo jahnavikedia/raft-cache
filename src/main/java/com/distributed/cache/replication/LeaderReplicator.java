@@ -286,4 +286,25 @@ public class LeaderReplicator {
     public long getMatchIndex(String followerId) {
         return matchIndex.getOrDefault(followerId, 0L);
     }
+
+    /**
+     * Get all next indices (for replication state API)
+     */
+    public Map<String, Long> getAllNextIndex() {
+        return new ConcurrentHashMap<>(nextIndex);
+    }
+
+    /**
+     * Get all match indices (for replication state API)
+     */
+    public Map<String, Long> getAllMatchIndex() {
+        return new ConcurrentHashMap<>(matchIndex);
+    }
+
+    /**
+     * Get all peer IDs
+     */
+    public java.util.Set<String> getPeerIds() {
+        return peers.keySet();
+    }
 }

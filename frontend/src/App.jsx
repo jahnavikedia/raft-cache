@@ -1,23 +1,24 @@
 import { useState, useEffect } from 'react'
-import { Activity, Database, Brain, Zap, Clock, Scale } from 'lucide-react'
-import ClusterView from './components/ClusterView'
+import { Database, Brain, Zap, Clock, Scale } from 'lucide-react'
+import Navbar from './components/Navbar'
+import ClusterStatus from './components/ClusterStatus'
 import LogViewer from './components/LogViewer'
 import Controls from './components/Controls'
-import MLStats from './components/MLStats'
 import CacheView from './components/CacheView'
 import LatencyComparison from './components/LatencyComparison'
 import ElectionDemo from './components/ElectionDemo'
-import EvictionComparison from './components/EvictionComparison'
+import ReplicationDemo from './components/ReplicationDemo'
+import EvictionDemo from './components/EvictionDemo'
 import axios from 'axios'
 
 function App() {
+  const [activePage, setActivePage] = useState('election')
   const [nodes, setNodes] = useState([
     { id: 'node1', port: 8081, state: 'UNKNOWN', term: 0, logSize: 0, lease: false },
     { id: 'node2', port: 8082, state: 'UNKNOWN', term: 0, logSize: 0, lease: false },
     { id: 'node3', port: 8083, state: 'UNKNOWN', term: 0, logSize: 0, lease: false },
   ])
   const [logs, setLogs] = useState([])
-  const [mlPrediction, setMlPrediction] = useState(null)
   const [testKey, setTestKey] = useState('key1')
 
   // Poll node status
@@ -47,55 +48,59 @@ function App() {
     return () => clearInterval(interval)
   }, [])
 
-  return (
-    <div className="container" style={{ maxWidth: '1600px', padding: '2rem' }}>
-      <header style={{ marginBottom: '2.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div>
-          <h1 style={{ fontSize: '2.5rem', margin: 0, background: 'linear-gradient(to right, #00f0ff, #00ff9d)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
-            Raft Cache
-          </h1>
-          <p style={{ color: 'var(--text-secondary)', marginTop: '0.5rem' }}>
-            Distributed Consensus with ML-Driven Cache Eviction
-          </p>
-        </div>
-        <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
-          <div className="badge" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'rgba(0, 255, 157, 0.1)', color: 'var(--accent-green)', padding: '0.5rem 1rem' }}>
-            <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: 'var(--accent-green)', boxShadow: '0 0 8px var(--accent-green)' }} />
-            Live
-          </div>
-        </div>
-      </header>
-
-      {/* Main Content */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
-          {/* Section 1: Cluster Status */}
-          <div>
-            <h2 style={{
-              fontSize: '1rem',
-              color: 'var(--text-secondary)',
-              marginBottom: '1rem',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.5rem',
-              textTransform: 'uppercase',
-              letterSpacing: '0.05em'
-            }}>
-              <Activity size={16} /> Cluster Status
-            </h2>
-            <div className="grid-cols-3">
-              <ClusterView nodes={nodes} />
+  const renderPage = () => {
+    switch (activePage) {
+      case 'election':
+        return (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+            <ElectionDemo nodes={nodes} />
+            <div>
+              <h2 style={{
+                fontSize: '1rem',
+                color: 'var(--text-secondary)',
+                marginBottom: '1rem',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem',
+                textTransform: 'uppercase',
+                letterSpacing: '0.05em'
+              }}>
+                <Clock size={16} /> Raft Consensus Log
+              </h2>
+              <LogViewer logs={logs} />
             </div>
           </div>
+        )
 
-          {/* Section 2: Election Demo */}
-          <ElectionDemo nodes={nodes} />
+      case 'replication':
+        return (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+            <ReplicationDemo nodes={nodes} />
+            <div>
+              <h2 style={{
+                fontSize: '1rem',
+                color: 'var(--text-secondary)',
+                marginBottom: '1rem',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem',
+                textTransform: 'uppercase',
+                letterSpacing: '0.05em'
+              }}>
+                <Clock size={16} /> Raft Consensus Log
+              </h2>
+              <LogViewer logs={logs} />
+            </div>
+          </div>
+        )
 
-          {/* Section 3: Cache Operations & Contents */}
-          <div>
+      case 'cache':
+        return (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
             <h2 style={{
               fontSize: '1rem',
               color: 'var(--text-secondary)',
-              marginBottom: '1rem',
+              marginBottom: '0',
               display: 'flex',
               alignItems: 'center',
               gap: '0.5rem',
@@ -114,68 +119,87 @@ function App() {
               </div>
               <CacheView nodes={nodes} />
             </div>
-          </div>
-
-          {/* Section 4: Read Lease & ML */}
-          <div>
-            <h2 style={{
-              fontSize: '1rem',
-              color: 'var(--text-secondary)',
-              marginBottom: '1rem',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.5rem',
-              textTransform: 'uppercase',
-              letterSpacing: '0.05em'
-            }}>
-              <Zap size={16} /> Performance & Intelligence
-            </h2>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem' }}>
-              <LatencyComparison nodes={nodes} testKey={testKey} />
-              <div className="card">
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1.5rem', borderBottom: '1px solid var(--border-color)', paddingBottom: '1rem' }}>
-                  <Brain size={20} color="var(--accent-purple)" />
-                  <h2 style={{ margin: 0, fontSize: '1.25rem' }}>ML Insights</h2>
-                </div>
-                <MLStats prediction={mlPrediction} setPrediction={setMlPrediction} nodes={nodes} />
-              </div>
+            <div>
+              <h2 style={{
+                fontSize: '1rem',
+                color: 'var(--text-secondary)',
+                marginBottom: '1rem',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem',
+                textTransform: 'uppercase',
+                letterSpacing: '0.05em'
+              }}>
+                <Clock size={16} /> Raft Consensus Log
+              </h2>
+              <LogViewer logs={logs} />
             </div>
           </div>
+        )
 
-          {/* Section 5: LRU vs ML Eviction Comparison */}
-          <div>
+      case 'performance':
+        return (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
             <h2 style={{
               fontSize: '1rem',
               color: 'var(--text-secondary)',
-              marginBottom: '1rem',
+              marginBottom: '0',
               display: 'flex',
               alignItems: 'center',
               gap: '0.5rem',
               textTransform: 'uppercase',
               letterSpacing: '0.05em'
             }}>
-              <Scale size={16} /> Eviction Strategy Comparison
+              <Zap size={16} /> Performance & Read Leases
             </h2>
-            <EvictionComparison nodes={nodes} />
+            <LatencyComparison nodes={nodes} testKey={testKey} />
           </div>
+        )
 
-          {/* Section 6: Raft Log */}
-          <div>
-            <h2 style={{
-              fontSize: '1rem',
-              color: 'var(--text-secondary)',
-              marginBottom: '1rem',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.5rem',
-              textTransform: 'uppercase',
-              letterSpacing: '0.05em'
-            }}>
-              <Clock size={16} /> Raft Consensus Log
-            </h2>
-            <LogViewer logs={logs} />
+      case 'ml':
+        return (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+            <EvictionDemo nodes={nodes} />
           </div>
+        )
+
+      default:
+        return null
+    }
+  }
+
+  return (
+    <div className="app-container">
+      {/* Header */}
+      <header className="app-header">
+        <div>
+          <h1 style={{ fontSize: '1.75rem', margin: 0, background: 'linear-gradient(to right, #00f0ff, #00ff9d)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
+            Raft Cache
+          </h1>
+          <p style={{ color: 'var(--text-secondary)', marginTop: '0.25rem', fontSize: '0.85rem' }}>
+            Distributed Consensus with ML-Driven Cache Eviction
+          </p>
+        </div>
+        <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
+          <div className="badge" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'rgba(0, 255, 157, 0.1)', color: 'var(--accent-green)', padding: '0.5rem 1rem' }}>
+            <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: 'var(--accent-green)', boxShadow: '0 0 8px var(--accent-green)' }} />
+            Live
+          </div>
+        </div>
+      </header>
+
+      {/* Cluster Status - Top Bar */}
+      <div className="cluster-topbar">
+        <ClusterStatus nodes={nodes} />
       </div>
+
+      {/* Navbar - Below Cluster */}
+      <Navbar activePage={activePage} setActivePage={setActivePage} />
+
+      {/* Page Content */}
+      <main className="page-content-full">
+        {renderPage()}
+      </main>
     </div>
   )
 }

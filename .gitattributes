@@ -1,2 +1,10 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Exclude from GitHub language statistics
+*.md linguist-documentation
+*.sh linguist-detectable=false
+scripts/* linguist-detectable=false
+*.lock linguist-generated
+package-lock.json linguist-generated
+dump.rdb binary

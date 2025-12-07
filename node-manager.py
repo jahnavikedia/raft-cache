@@ -147,6 +147,12 @@ def stop_node(node_id):
             return jsonify({"status": "not_running", "node_id": node_id})
 
 
+@app.route("/kill/<node_id>", methods=["POST"])
+def kill_node(node_id):
+    """Kill a specific node (alias for stop)"""
+    return stop_node(node_id)
+
+
 @app.route("/restart/<node_id>", methods=["POST"])
 def restart_node(node_id):
     """Restart a specific node"""

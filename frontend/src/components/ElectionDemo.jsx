@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Crown, AlertTriangle, CheckCircle, PlayCircle, RotateCcw, Power, Clock, Users, Activity, Vote, Circle } from 'lucide-react'
+import { Crown, AlertTriangle, CheckCircle, PlayCircle, RotateCcw, Power, Clock, Users, Activity, Vote, Circle, Server } from 'lucide-react'
 import axios from 'axios'
 
 const ELECTION_TIMEOUT_MIN = 150
@@ -498,223 +498,290 @@ const ElectionDemo = ({ nodes }) => {
     )
   }
 
-  return (
-    <div className="card" style={{ background: 'linear-gradient(135deg, rgba(0,240,255,0.03) 0%, rgba(138,43,226,0.03) 100%)' }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.5rem', borderBottom: '1px solid var(--border-color)', paddingBottom: '1rem' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          <Crown size={24} color="var(--accent-blue)" />
-          <h2 style={{ margin: 0, fontSize: '1.5rem' }}>Raft Consensus Demo</h2>
+  // Render node card
+  const renderNodeCard = (node) => {
+    const isLeader = node.state === 'LEADER'
+    const isDown = !node.active || node.state === 'DOWN' || node.state === 'UNKNOWN'
+
+    return (
+      <div
+        key={node.id}
+        className="card"
+        style={{
+          borderColor: isLeader ? 'var(--accent-blue)' : isDown ? 'var(--error)' : 'var(--border-color)',
+          opacity: isDown ? 0.7 : 1,
+          position: 'relative',
+          overflow: 'hidden'
+        }}
+      >
+        {isLeader && (
+          <div style={{
+            position: 'absolute',
+            top: 0,
+            right: 0,
+            background: 'var(--accent-blue)',
+            color: '#000',
+            padding: '0.25rem 0.75rem',
+            borderBottomLeftRadius: '8px',
+            fontWeight: 'bold',
+            fontSize: '0.75rem',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.25rem'
+          }}>
+            <Crown size={12} /> LEADER
+          </div>
+        )}
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '1rem' }}>
+          <div style={{
+            background: isDown ? 'rgba(255, 77, 77, 0.1)' : 'rgba(255, 255, 255, 0.05)',
+            padding: '0.75rem',
+            borderRadius: '50%',
+            color: isDown ? 'var(--error)' : 'var(--text-primary)'
+          }}>
+            <Server size={24} />
+          </div>
+          <div>
+            <h3 style={{ margin: 0, fontSize: '1.1rem' }}>{node.id}</h3>
+            <span style={{
+              fontSize: '0.8rem',
+              color: isDown ? 'var(--error)' : 'var(--text-secondary)'
+            }}>
+              localhost:{node.port}
+            </span>
+          </div>
         </div>
-        <div style={{ display: 'flex', gap: '0.5rem' }}>
-          {demoMode === 'running' && demoStep !== 'idle' && (
+
+        <div style={{ display: 'grid', gap: '0.75rem' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.9rem' }}>
+            <span style={{ color: 'var(--text-secondary)' }}>Term</span>
+            <span style={{ fontFamily: 'monospace', color: 'var(--accent-purple)' }}>{node.currentTerm || node.term}</span>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.9rem' }}>
+            <span style={{ color: 'var(--text-secondary)' }}>Log Index</span>
+            <span style={{ fontFamily: 'monospace', color: 'var(--accent-green)' }}>{node.commitIndex || 0}</span>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.9rem' }}>
+            <span style={{ color: 'var(--text-secondary)' }}>Role</span>
+            <span className={
+              node.state === 'LEADER' ? 'badge badge-leader' :
+              node.state === 'CANDIDATE' ? 'badge badge-candidate' :
+              'badge badge-follower'
+            }>
+              {node.state}
+            </span>
+          </div>
+        </div>
+
+        {/* Kill/Start Node Button */}
+        <div style={{ marginTop: '1rem', paddingTop: '0.75rem', borderTop: '1px solid var(--border-color)' }}>
+          {!isDown ? (
             <button
-              onClick={resetDemo}
+              onClick={() => killNode(node)}
+              disabled={demoState === 'killing' || demoState === 'electing' || demoMode === 'guided'}
               style={{
-                padding: '0.5rem 1rem',
-                background: 'rgba(255,255,255,0.05)',
-                border: '1px solid var(--border-color)',
+                width: '100%',
+                padding: '0.5rem',
+                background: 'rgba(255, 77, 77, 0.1)',
+                border: '1px solid var(--error)',
                 borderRadius: '6px',
-                color: 'var(--text-secondary)',
-                cursor: 'pointer',
+                color: 'var(--error)',
+                cursor: (demoState === 'killing' || demoState === 'electing' || demoMode === 'guided') ? 'not-allowed' : 'pointer',
                 display: 'flex',
                 alignItems: 'center',
+                justifyContent: 'center',
                 gap: '0.5rem',
-                fontSize: '0.85rem'
+                fontSize: '0.85rem',
+                opacity: (demoState === 'killing' || demoState === 'electing' || demoMode === 'guided') ? 0.5 : 1
               }}
             >
-              <RotateCcw size={14} /> Reset
+              <Power size={14} />
+              Kill Node
+            </button>
+          ) : (
+            <button
+              onClick={() => startNode(node.id)}
+              disabled={demoMode === 'guided'}
+              style={{
+                width: '100%',
+                padding: '0.5rem',
+                background: 'rgba(0, 255, 157, 0.1)',
+                border: '1px solid var(--accent-green)',
+                borderRadius: '6px',
+                color: 'var(--accent-green)',
+                cursor: demoMode === 'guided' ? 'not-allowed' : 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '0.5rem',
+                fontSize: '0.85rem',
+                opacity: demoMode === 'guided' ? 0.5 : 1
+              }}
+            >
+              <PlayCircle size={14} />
+              Start Node
             </button>
           )}
         </div>
       </div>
+    )
+  }
 
-      {/* Guided Demo Visualization */}
-      {renderStepVisualization()}
-
-      {/* Start Demo Button - shown when demo not running */}
-      {demoMode === 'running' && demoStep !== 'running' && (
-        <div style={{
-          textAlign: 'center',
-          padding: '1.5rem',
-          marginBottom: '1.5rem',
-          background: 'rgba(0, 240, 255, 0.05)',
-          borderRadius: '12px',
-          border: '2px dashed var(--accent-blue)'
-        }}>
-          <h3 style={{ margin: '0 0 0.75rem 0', color: 'var(--accent-blue)' }}>Learn How Raft Election Works</h3>
-          <p style={{ color: 'var(--text-secondary)', marginBottom: '1rem', fontSize: '0.9rem' }}>
-            Watch a step-by-step simulation of the leader election process
-          </p>
-          <button
-            onClick={startGuidedDemo}
-            style={{
-              padding: '0.75rem 1.5rem',
-              background: 'linear-gradient(135deg, var(--accent-blue) 0%, var(--accent-purple) 100%)',
-              border: 'none',
-              borderRadius: '8px',
-              color: '#000',
-              cursor: 'pointer',
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '0.5rem',
-              fontSize: '1rem',
-              fontWeight: 'bold'
-            }}
-          >
-            <PlayCircle size={20} /> Play Election Simulation
-          </button>
-          <p style={{ color: 'var(--text-secondary)', marginTop: '0.75rem', fontSize: '0.8rem', opacity: 0.7 }}>
-            (This is a visualization only - won't affect the running cluster)
-          </p>
+  return (
+    <div>
+      {/* Election Demo Card */}
+      <div className="card" style={{ background: 'linear-gradient(135deg, rgba(0,240,255,0.03) 0%, rgba(138,43,226,0.03) 100%)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.5rem', borderBottom: '1px solid var(--border-color)', paddingBottom: '1rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <Crown size={24} color="var(--accent-blue)" />
+            <h2 style={{ margin: 0, fontSize: '1.5rem' }}>Raft Consensus Demo</h2>
+          </div>
+          <div style={{ display: 'flex', gap: '0.5rem' }}>
+            {demoMode === 'running' && demoStep !== 'idle' && (
+              <button
+                onClick={resetDemo}
+                style={{
+                  padding: '0.5rem 1rem',
+                  background: 'rgba(255,255,255,0.05)',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '6px',
+                  color: 'var(--text-secondary)',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.5rem',
+                  fontSize: '0.85rem'
+                }}
+              >
+                <RotateCcw size={14} /> Reset
+              </button>
+            )}
+          </div>
         </div>
-      )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem' }}>
-        {/* Left: Node Control */}
-        <div>
-          <h3 style={{ margin: '0 0 1rem 0', fontSize: '1rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <Users size={16} /> Node Control
-          </h3>
+        {/* Guided Demo Visualization */}
+        {renderStepVisualization()}
 
-          {/* Live Stats */}
+        {/* Start Demo Button - shown when demo not running */}
+        {demoMode === 'running' && demoStep !== 'running' && (
           <div style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(3, 1fr)',
-            gap: '0.75rem',
-            marginBottom: '1rem'
-          }}>
-            <div style={{
-              background: 'rgba(0, 255, 157, 0.1)',
-              padding: '0.75rem',
-              borderRadius: '8px',
-              textAlign: 'center'
-            }}>
-              <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: 'var(--accent-green)' }}>{activeNodes.length}</div>
-              <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Active</div>
-            </div>
-            <div style={{
-              background: 'rgba(255, 77, 77, 0.1)',
-              padding: '0.75rem',
-              borderRadius: '8px',
-              textAlign: 'center'
-            }}>
-              <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: 'var(--error)' }}>{downNodes.length}</div>
-              <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Down</div>
-            </div>
-            <div style={{
-              background: 'rgba(138, 43, 226, 0.1)',
-              padding: '0.75rem',
-              borderRadius: '8px',
-              textAlign: 'center'
-            }}>
-              <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: 'var(--accent-purple)' }}>
-                {currentLeader?.currentTerm || currentLeader?.term || '-'}
-              </div>
-              <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Term</div>
-            </div>
-          </div>
-
-          {/* Node Buttons */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-            {nodes.map(node => {
-              const isLeader = node.state === 'LEADER'
-              const isDown = !node.active || node.state === 'DOWN' || node.state === 'UNKNOWN'
-
-              return (
-                <div
-                  key={node.id}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    padding: '0.75rem 1rem',
-                    background: isDown ? 'rgba(255, 77, 77, 0.05)' : isLeader ? 'rgba(0, 240, 255, 0.05)' : 'rgba(255,255,255,0.02)',
-                    border: `1px solid ${isLeader ? 'var(--accent-blue)' : isDown ? 'var(--error)' : 'var(--border-color)'}`,
-                    borderRadius: '8px'
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                    <div style={{
-                      width: '10px',
-                      height: '10px',
-                      borderRadius: '50%',
-                      background: isDown ? 'var(--error)' : 'var(--accent-green)',
-                      boxShadow: isDown ? 'none' : '0 0 8px var(--accent-green)'
-                    }} />
-                    <div>
-                      <div style={{ fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                        {node.id}
-                        {isLeader && <Crown size={14} color="var(--accent-blue)" />}
-                      </div>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-                        {isDown ? 'OFFLINE' : node.state} • Port {node.port}
-                      </div>
-                    </div>
-                  </div>
-
-                  {!isDown ? (
-                    <button
-                      onClick={() => killNode(node)}
-                      disabled={demoState === 'killing' || demoState === 'electing' || demoMode === 'guided'}
-                      style={{
-                        padding: '0.4rem 0.75rem',
-                        background: 'rgba(255, 77, 77, 0.1)',
-                        border: '1px solid var(--error)',
-                        borderRadius: '6px',
-                        color: 'var(--error)',
-                        cursor: (demoState === 'killing' || demoState === 'electing' || demoMode === 'guided') ? 'not-allowed' : 'pointer',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '0.4rem',
-                        fontSize: '0.8rem',
-                        opacity: (demoState === 'killing' || demoState === 'electing' || demoMode === 'guided') ? 0.5 : 1
-                      }}
-                    >
-                      <Power size={12} /> Kill
-                    </button>
-                  ) : (
-                    <button
-                      onClick={() => startNode(node.id)}
-                      disabled={demoMode === 'guided'}
-                      style={{
-                        padding: '0.4rem 0.75rem',
-                        background: 'rgba(0, 255, 157, 0.1)',
-                        border: '1px solid var(--accent-green)',
-                        borderRadius: '6px',
-                        color: 'var(--accent-green)',
-                        cursor: demoMode === 'guided' ? 'not-allowed' : 'pointer',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '0.4rem',
-                        fontSize: '0.8rem',
-                        opacity: demoMode === 'guided' ? 0.5 : 1
-                      }}
-                    >
-                      <PlayCircle size={12} /> Start
-                    </button>
-                  )}
-                </div>
-              )
-            })}
-          </div>
-
-          {/* Election Info Box */}
-          <div style={{
-            marginTop: '1rem',
-            padding: '1rem',
+            textAlign: 'center',
+            padding: '1.5rem',
+            marginBottom: '1.5rem',
             background: 'rgba(0, 240, 255, 0.05)',
-            border: '1px solid rgba(0, 240, 255, 0.2)',
-            borderRadius: '8px'
+            borderRadius: '12px',
+            border: '2px dashed var(--accent-blue)'
           }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
-              <Clock size={14} color="var(--accent-blue)" />
-              <span style={{ fontWeight: 'bold', fontSize: '0.9rem' }}>Election Timeout</span>
+            <h3 style={{ margin: '0 0 0.75rem 0', color: 'var(--accent-blue)' }}>Learn How Raft Election Works</h3>
+            <p style={{ color: 'var(--text-secondary)', marginBottom: '1rem', fontSize: '0.9rem' }}>
+              Watch a step-by-step simulation of the leader election process
+            </p>
+            <button
+              onClick={startGuidedDemo}
+              style={{
+                padding: '0.75rem 1.5rem',
+                background: 'linear-gradient(135deg, var(--accent-blue) 0%, var(--accent-purple) 100%)',
+                border: 'none',
+                borderRadius: '8px',
+                color: '#000',
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '0.5rem',
+                fontSize: '1rem',
+                fontWeight: 'bold'
+              }}
+            >
+              <PlayCircle size={20} /> Play Election Simulation
+            </button>
+            <p style={{ color: 'var(--text-secondary)', marginTop: '0.75rem', fontSize: '0.8rem', opacity: 0.7 }}>
+              (This is a visualization only - won't affect the running cluster)
+            </p>
+          </div>
+        )}
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem' }}>
+          {/* Left: Election Info & Stats */}
+          <div>
+            <h3 style={{ margin: '0 0 1rem 0', fontSize: '1rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <Users size={16} /> Cluster Stats
+            </h3>
+
+            {/* Live Stats */}
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(3, 1fr)',
+              gap: '0.75rem',
+              marginBottom: '1rem'
+            }}>
+              <div style={{
+                background: 'rgba(0, 255, 157, 0.1)',
+                padding: '0.75rem',
+                borderRadius: '8px',
+                textAlign: 'center'
+              }}>
+                <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: 'var(--accent-green)' }}>{activeNodes.length}</div>
+                <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Active</div>
+              </div>
+              <div style={{
+                background: 'rgba(255, 77, 77, 0.1)',
+                padding: '0.75rem',
+                borderRadius: '8px',
+                textAlign: 'center'
+              }}>
+                <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: 'var(--error)' }}>{downNodes.length}</div>
+                <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Down</div>
+              </div>
+              <div style={{
+                background: 'rgba(138, 43, 226, 0.1)',
+                padding: '0.75rem',
+                borderRadius: '8px',
+                textAlign: 'center'
+              }}>
+                <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: 'var(--accent-purple)' }}>
+                  {currentLeader?.currentTerm || currentLeader?.term || '-'}
+                </div>
+                <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Term</div>
+              </div>
             </div>
-            <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-              <strong>150-300ms</strong> randomized timeout. When a follower doesn't receive heartbeat from leader, it becomes a candidate and requests votes.
+
+            {/* How It Works */}
+            <div style={{
+              padding: '1rem',
+              background: 'rgba(138, 43, 226, 0.05)',
+              border: '1px solid rgba(138, 43, 226, 0.2)',
+              borderRadius: '8px',
+              marginBottom: '1rem'
+            }}>
+              <div style={{ fontWeight: 'bold', fontSize: '0.9rem', marginBottom: '0.5rem', color: 'var(--accent-purple)' }}>
+                How Raft Election Works:
+              </div>
+              <ol style={{ margin: 0, paddingLeft: '1.25rem', color: 'var(--text-secondary)', fontSize: '0.8rem', lineHeight: 1.8 }}>
+                <li>Leader sends heartbeats every ~50ms</li>
+                <li>Follower times out after 150-300ms without heartbeat</li>
+                <li>Follower becomes <strong>Candidate</strong>, increments term</li>
+                <li>Candidate requests votes from other nodes</li>
+                <li>Majority vote = new <strong>Leader</strong></li>
+              </ol>
+            </div>
+
+            {/* Election Info Box */}
+            <div style={{
+              padding: '1rem',
+              background: 'rgba(0, 240, 255, 0.05)',
+              border: '1px solid rgba(0, 240, 255, 0.2)',
+              borderRadius: '8px'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                <Clock size={14} color="var(--accent-blue)" />
+                <span style={{ fontWeight: 'bold', fontSize: '0.9rem' }}>Try It!</span>
+              </div>
+              <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                Kill the <strong>LEADER</strong> node in the sidebar to trigger a real election and watch a new leader get elected automatically.
+              </div>
             </div>
           </div>
-        </div>
 
         {/* Right: Event Log & Status */}
         <div>
@@ -842,27 +909,9 @@ const ElectionDemo = ({ nodes }) => {
             )}
           </div>
 
-          {/* How It Works */}
-          <div style={{
-            marginTop: '1rem',
-            padding: '1rem',
-            background: 'rgba(138, 43, 226, 0.05)',
-            border: '1px solid rgba(138, 43, 226, 0.2)',
-            borderRadius: '8px'
-          }}>
-            <div style={{ fontWeight: 'bold', fontSize: '0.9rem', marginBottom: '0.5rem', color: 'var(--accent-purple)' }}>
-              How Raft Election Works:
-            </div>
-            <ol style={{ margin: 0, paddingLeft: '1.25rem', color: 'var(--text-secondary)', fontSize: '0.8rem', lineHeight: 1.8 }}>
-              <li>Leader sends heartbeats every ~50ms</li>
-              <li>Follower times out after 150-300ms without heartbeat</li>
-              <li>Follower becomes <strong>Candidate</strong>, increments term</li>
-              <li>Candidate requests votes from other nodes</li>
-              <li>Majority vote = new <strong>Leader</strong></li>
-            </ol>
-          </div>
         </div>
       </div>
+    </div>
     </div>
   )
 }

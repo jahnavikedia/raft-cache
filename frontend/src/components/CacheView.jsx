@@ -1,10 +1,11 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { Database, RefreshCw, Trash2 } from 'lucide-react'
 import axios from 'axios'
 
 const CacheView = ({ nodes }) => {
   const [cacheData, setCacheData] = useState([])
   const [loading, setLoading] = useState(false)
+  const keyTimestamps = useRef({})
 
   const fetchCache = async () => {
     setLoading(true)
@@ -13,10 +14,20 @@ const CacheView = ({ nodes }) => {
       const leader = nodes.find(n => n.state === 'LEADER' && n.active)
       const activeNode = leader || nodes.find(n => n.active) || nodes[0]
       const res = await axios.get(`http://localhost:${activeNode.port}/cache/all`)
-      // Convert object to array of {key, value} and sort by key
+      const now = Date.now()
+
+      // Convert object to array of {key, value}
       const entries = Object.entries(res.data.data || {})
-        .map(([key, value]) => ({ key, value }))
-        .sort((a, b) => a.key.localeCompare(b.key))
+        .map(([key, value]) => {
+          // Track when we first saw each key
+          if (!keyTimestamps.current[key]) {
+            keyTimestamps.current[key] = now
+          }
+          return { key, value, timestamp: keyTimestamps.current[key] }
+        })
+        // Sort by timestamp descending (most recent first)
+        .sort((a, b) => b.timestamp - a.timestamp)
+
       setCacheData(entries)
     } catch (e) {
       console.error("Failed to fetch cache", e)

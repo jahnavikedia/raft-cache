@@ -250,6 +250,39 @@ public class CacheRESTServer {
             }
         });
 
+        // GET /raft/replication-state - Get log replication state (leader only)
+        app.get("/raft/replication-state", ctx -> {
+            try {
+                boolean isLeader = raftNode.getState() == RaftState.LEADER;
+                var replicator = raftNode.getLeaderReplicator();
+
+                if (isLeader && replicator != null) {
+                    ctx.json(Map.of(
+                            "isLeader", true,
+                            "nodeId", raftNode.getNodeId(),
+                            "currentTerm", raftNode.getCurrentTerm(),
+                            "lastLogIndex", raftNode.getRaftLog().getLastIndex(),
+                            "commitIndex", raftNode.getCommitIndex(),
+                            "nextIndex", replicator.getAllNextIndex(),
+                            "matchIndex", replicator.getAllMatchIndex(),
+                            "followers", replicator.getPeerIds()));
+                } else {
+                    // Not a leader - return basic info
+                    ctx.json(Map.of(
+                            "isLeader", false,
+                            "nodeId", raftNode.getNodeId(),
+                            "role", raftNode.getState().name(),
+                            "currentTerm", raftNode.getCurrentTerm(),
+                            "lastLogIndex", raftNode.getRaftLog().getLastIndex(),
+                            "commitIndex", raftNode.getCommitIndex()));
+                }
+            } catch (Exception e) {
+                logger.error("Failed to get replication state", e);
+                ctx.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                        .json(Map.of("error", e.getMessage()));
+            }
+        });
+
         // POST /admin/shutdown - Gracefully shutdown this node (for demo purposes)
         app.post("/admin/shutdown", ctx -> {
             logger.warn("Received shutdown request - node will terminate in 500ms");

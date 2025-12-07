@@ -205,3 +205,186 @@ body {
   letter-spacing: 0.05em;
   font-weight: 500;
 }
+
+/* App Layout */
+.app-container {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-header {
+  padding: 1rem 2rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-dark);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+
+/* Cluster Top Bar */
+.cluster-topbar {
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border-color);
+  padding: 1rem 2rem;
+}
+
+/* Navbar */
+.navbar {
+  background: var(--bg-dark);
+  border-bottom: 1px solid var(--border-color);
+  padding: 0 2rem;
+}
+
+.nav-links {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.nav-link {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.875rem 1.25rem;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-weight: 500;
+  transition: all 0.2s;
+  border-bottom: 2px solid transparent;
+  position: relative;
+}
+
+.nav-link:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.nav-link.active {
+  color: var(--accent-blue);
+  border-bottom-color: var(--accent-blue);
+}
+
+.nav-link.active::after {
+  content: '';
+  position: absolute;
+  bottom: -1px;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--accent-blue);
+  box-shadow: 0 0 10px var(--accent-blue);
+}
+
+/* Page Content - Full Width */
+.page-content-full {
+  padding: 1.5rem 2rem;
+  max-width: 1600px;
+  margin: 0 auto;
+}
+
+/* Cluster Status - Horizontal Layout */
+.cluster-status {
+  display: flex;
+  flex-direction: column;
+}
+
+.cluster-nodes-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1rem;
+}
+
+.cluster-node-card {
+  padding: 1rem !important;
+}
+
+.cluster-node-card:hover {
+  border-color: var(--accent-blue) !important;
+}
+
+/* Heartbeat animations */
+@keyframes heartbeat-pulse {
+  0%, 100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.2);
+  }
+}
+
+@keyframes heartbeat-move-1 {
+  0% {
+    transform: translateX(0) rotate(-20deg);
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(40px) rotate(-20deg);
+    opacity: 0;
+  }
+}
+
+@keyframes heartbeat-move-2 {
+  0% {
+    transform: translateX(0) rotate(20deg);
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(40px) rotate(20deg);
+    opacity: 0;
+  }
+}
+
+@keyframes heartbeat-send {
+  0% {
+    transform: translateX(0);
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(30px);
+    opacity: 0;
+  }
+}
+
+@keyframes heartbeat-receive {
+  0% {
+    transform: translateY(-50%) translateX(-20px);
+    opacity: 0;
+  }
+  50% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(-50%) translateX(10px);
+    opacity: 0;
+  }
+}
+
+/* Clean pulse ring for leader broadcasting */
+@keyframes leader-pulse-ring {
+  0% {
+    transform: translate(-50%, -50%) scale(1);
+    opacity: 0.8;
+  }
+  100% {
+    transform: translate(-50%, -50%) scale(1.4);
+    opacity: 0;
+  }
+}
+
+/* Subtle pulse ring for followers receiving */
+@keyframes pulse-ring {
+  0% {
+    opacity: 0.8;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.02);
+  }
+}

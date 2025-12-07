@@ -364,6 +364,7 @@ public class KeyValueStore {
                         checkAndEvict();
                     }
                     data.put(command.getKey(), command.getValue());
+                    accessTracker.recordAccess(command.getKey());  // Record access on write too
                     logger.info("Applied PUT: key='{}', value='{}'", command.getKey(), command.getValue());
                     break;
 
