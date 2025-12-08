@@ -11,7 +11,9 @@ dump.rdb binary
 *.pdf binary linguist-documentation
 
 # Ensure Java is the primary language
-*.java linguist-detectable=true
-src/**/*.java linguist-detectable=true
-src/main/java/**/*.java linguist-detectable=true
-src/test/java/**/*.java linguist-detectable=true
+*.java linguist-detectable=true linguist-vendored=false
+src/**/*.java linguist-detectable=true linguist-vendored=false
+
+# Mark frontend JS as vendored to reduce its weight
+frontend/src/setupTests.js linguist-vendored=true
+frontend/src/reportWebVitals.js linguist-vendored=true
