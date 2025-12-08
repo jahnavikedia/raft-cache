@@ -21,6 +21,11 @@ node_processes = {}
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 JAR_PATH = os.path.join(PROJECT_DIR, "target", "raft-cache-1.0-SNAPSHOT.jar")
 
+# Java path - use Homebrew OpenJDK 17 if available
+JAVA_PATH = "/opt/homebrew/opt/openjdk@17/bin/java"
+if not os.path.exists(JAVA_PATH):
+    JAVA_PATH = "java"  # Fall back to system java
+
 # Node configurations
 NODES = {
     "node1": {"config": "config/node1.yaml", "port": 8081},
@@ -91,7 +96,7 @@ def start_node(node_id):
     log_path = f"/tmp/{node_id}.log"
 
     # Start the node
-    cmd = ["java", "-jar", JAR_PATH, "--config", config_path]
+    cmd = [JAVA_PATH, "-jar", JAR_PATH, "--config", config_path]
 
     with open(log_path, "w") as log_file:
         process = subprocess.Popen(
