@@ -196,6 +196,9 @@ const Controls = ({ nodes, onOperationComplete, onKeyChange }) => {
         <button className="btn" onClick={() => handleRead('strong')} disabled={loading}>
           <Database size={16} /> Strong Read
         </button>
+        <button className="btn" onClick={() => handleRead('eventual')} disabled={loading} style={{ background: 'rgba(0, 240, 255, 0.1)', border: '1px solid var(--accent-blue)', color: 'var(--accent-blue)' }}>
+          <RefreshCw size={16} /> Eventual Read
+        </button>
         <button className="btn btn-success" onClick={() => handleRead('lease')} disabled={loading}>
           <Zap size={16} /> Lease Read
         </button>

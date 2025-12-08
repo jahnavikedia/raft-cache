@@ -36,6 +36,43 @@ const CacheView = ({ nodes }) => {
     }
   }
 
+  const clearAllCache = async () => {
+    if (!window.confirm('Are you sure you want to delete all cache entries?')) {
+      return
+    }
+    
+    setLoading(true)
+    try {
+      const leader = nodes.find(n => n.state === 'LEADER' && n.active)
+      const activeNode = leader || nodes.find(n => n.active) || nodes[0]
+      
+      // Delete all keys
+      for (const { key } of cacheData) {
+        try {
+          await axios.delete(`http://localhost:${activeNode.port}/cache/${key}`, {
+            data: {
+              clientId: 'cache-ui',
+              sequenceNumber: Date.now()
+            }
+          })
+        } catch (err) {
+          console.error(`Failed to delete key ${key}:`, err)
+        }
+      }
+      
+      // Clear timestamp tracking
+      keyTimestamps.current = {}
+      
+      // Refresh cache
+      await fetchCache()
+    } catch (e) {
+      console.error("Failed to clear cache", e)
+      alert('Failed to clear cache. Please try again.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
   useEffect(() => {
     fetchCache()
     const interval = setInterval(fetchCache, 2000)  // Poll every 2 seconds
@@ -52,14 +89,33 @@ const CacheView = ({ nodes }) => {
             ({cacheData.length} keys)
           </span>
         </div>
-        <button
-          className="btn"
-          onClick={fetchCache}
-          disabled={loading}
-          style={{ padding: '0.25rem 0.5rem', fontSize: '0.8rem' }}
-        >
-          <RefreshCw size={14} className={loading ? 'spinning' : ''} />
-        </button>
+        <div style={{ display: 'flex', gap: '0.5rem' }}>
+          <button
+            className="btn"
+            onClick={fetchCache}
+            disabled={loading}
+            style={{ padding: '0.25rem 0.5rem', fontSize: '0.8rem' }}
+          >
+            <RefreshCw size={14} className={loading ? 'spinning' : ''} />
+          </button>
+          {cacheData.length > 0 && (
+            <button
+              className="btn"
+              onClick={clearAllCache}
+              disabled={loading}
+              style={{
+                padding: '0.25rem 0.75rem',
+                fontSize: '0.8rem',
+                background: 'rgba(255, 77, 77, 0.1)',
+                border: '1px solid var(--error)',
+                color: 'var(--error)'
+              }}
+            >
+              <Trash2 size={14} style={{ marginRight: '0.25rem' }} />
+              Clear All
+            </button>
+          )}
+        </div>
       </div>
 
       <div style={{

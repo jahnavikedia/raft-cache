@@ -10,6 +10,9 @@ const LatencyComparison = ({ nodes, testKey }) => {
   const [isRunningThroughput, setIsRunningThroughput] = useState(false)
   const [opsCount, setOpsCount] = useState(0)
   const [customKey, setCustomKey] = useState('')
+  const [mlCapacity, setMlCapacity] = useState(3)
+  const [mlPrediction, setMlPrediction] = useState(null)
+  const [mlLoading, setMlLoading] = useState(false)
 
   const leader = nodes.find(n => n.state === 'LEADER' && n.active)
 
@@ -94,17 +97,31 @@ const LatencyComparison = ({ nodes, testKey }) => {
           leaseLatencies.push(performance.now() - start)
         }
 
+        // Eventual reads (from follower)
+        const eventualLatencies = []
+        const follower = nodes.find(n => n.state === 'FOLLOWER' && n.active) || leader
+        const followerUrl = `http://localhost:${follower.port}`
+        for (let i = 0; i < 10; i++) {
+          const start = performance.now()
+          await axios.get(`${followerUrl}/cache/${keyToTest}?consistency=eventual`)
+          eventualLatencies.push(performance.now() - start)
+        }
+
         const avgStrong = strongLatencies.reduce((a, b) => a + b, 0) / strongLatencies.length
         const avgLease = leaseLatencies.reduce((a, b) => a + b, 0) / leaseLatencies.length
+        const avgEventual = eventualLatencies.reduce((a, b) => a + b, 0) / eventualLatencies.length
         const minStrong = Math.min(...strongLatencies)
         const maxStrong = Math.max(...strongLatencies)
         const minLease = Math.min(...leaseLatencies)
         const maxLease = Math.max(...leaseLatencies)
+        const minEventual = Math.min(...eventualLatencies)
+        const maxEventual = Math.max(...eventualLatencies)
 
         setResults({
           type: 'read',
           strong: { avg: avgStrong, min: minStrong, max: maxStrong, samples: strongLatencies },
           lease: { avg: avgLease, min: minLease, max: maxLease, samples: leaseLatencies },
+          eventual: { avg: avgEventual, min: minEventual, max: maxEventual, samples: eventualLatencies },
           speedup: (avgStrong / avgLease).toFixed(1),
           testKey: keyToTest
         })
@@ -136,6 +153,159 @@ const LatencyComparison = ({ nodes, testKey }) => {
       console.error("Benchmark failed", e)
     } finally {
       setLoading(false)
+    }
+  }
+
+  const predictEviction = async () => {
+    if (!leader) return
+    setMlLoading(true)
+    setMlPrediction(null)
+
+    try {
+      const baseUrl = `http://localhost:${leader.port}`
+      const statsRes = await axios.get(`${baseUrl}/cache/access-stats`)
+      const stats = statsRes.data.stats
+
+      if (stats.length === 0) {
+        setMlPrediction({ error: 'No cache data available. Insert some keys first.' })
+        return
+      }
+
+      // Get ML predictions
+      const mlPayload = {
+        keys: stats.map(item => ({
+          key: item.key,
+          access_count: item.totalAccessCount,
+          last_access_ms: item.lastAccessTime,
+          access_count_hour: item.accessCountHour,
+          access_count_day: item.accessCountDay,
+          avg_interval_ms: 0
+        })),
+        currentTime: Date.now()
+      }
+
+      const mlRes = await axios.post('http://localhost:5001/predict', mlPayload)
+      const predictions = mlRes.data.predictions
+      
+      // Create a map of key -> ML probability
+      const mlProbMap = {}
+      predictions.forEach(p => {
+        mlProbMap[p.key] = p.probability
+      })
+
+      // Generate realistic workload based on access patterns
+      // Keys with higher access counts get accessed more in simulation
+      const totalAccesses = stats.reduce((sum, s) => sum + s.totalAccessCount, 0)
+      const workloadSize = 100 // Simulate 100 cache accesses
+      const workload = []
+      
+      for (let i = 0; i < workloadSize; i++) {
+        // Weighted random selection based on access counts
+        let rand = Math.random() * totalAccesses
+        for (const stat of stats) {
+          rand -= stat.totalAccessCount
+          if (rand <= 0) {
+            workload.push(stat.key)
+            break
+          }
+        }
+      }
+
+      // Simulate LRU eviction
+      const lruCache = []
+      const lruAccessTimes = {}
+      let lruHits = 0
+      let lruMisses = 0
+
+      workload.forEach((key, time) => {
+        if (lruCache.includes(key)) {
+          // Hit
+          lruHits++
+          lruAccessTimes[key] = time
+        } else {
+          // Miss
+          lruMisses++
+          if (lruCache.length >= mlCapacity) {
+            // Evict LRU (oldest access time)
+            let lruKey = lruCache[0]
+            let oldestTime = lruAccessTimes[lruKey]
+            lruCache.forEach(k => {
+              if (lruAccessTimes[k] < oldestTime) {
+                oldestTime = lruAccessTimes[k]
+                lruKey = k
+              }
+            })
+            const idx = lruCache.indexOf(lruKey)
+            lruCache.splice(idx, 1)
+            delete lruAccessTimes[lruKey]
+          }
+          lruCache.push(key)
+          lruAccessTimes[key] = time
+        }
+      })
+
+      // Simulate ML eviction
+      const mlCache = []
+      let mlHits = 0
+      let mlMisses = 0
+
+      workload.forEach((key) => {
+        if (mlCache.includes(key)) {
+          // Hit
+          mlHits++
+        } else {
+          // Miss
+          mlMisses++
+          if (mlCache.length >= mlCapacity) {
+            // Evict key with lowest ML probability
+            let evictKey = mlCache[0]
+            let lowestProb = mlProbMap[evictKey] || 0
+            mlCache.forEach(k => {
+              const prob = mlProbMap[k] || 0
+              if (prob < lowestProb) {
+                lowestProb = prob
+                evictKey = k
+              }
+            })
+            const idx = mlCache.indexOf(evictKey)
+            mlCache.splice(idx, 1)
+          }
+          mlCache.push(key)
+        }
+      })
+
+      const lruHitRate = Math.round((lruHits / workloadSize) * 100)
+      const mlHitRate = Math.round((mlHits / workloadSize) * 100)
+
+      // Determine what each would evict right now
+      const sortedByLRU = [...stats].sort((a, b) => a.lastAccessTime - b.lastAccessTime)
+      const sortedByML = [...stats].sort((a, b) => {
+        const probA = mlProbMap[a.key] || 0
+        const probB = mlProbMap[b.key] || 0
+        return probA - probB
+      })
+
+      const numToEvict = Math.max(1, stats.length - mlCapacity)
+      const lruEvictions = sortedByLRU.slice(0, numToEvict).map(s => s.key)
+      const mlEvictions = sortedByML.slice(0, numToEvict).map(s => s.key)
+
+      setMlPrediction({
+        mlEvictions,
+        lruEvictions,
+        lruHitRate,
+        mlHitRate,
+        improvement: mlHitRate - lruHitRate,
+        allKeys: stats.map(s => s.key),
+        workloadSize,
+        lruHits,
+        lruMisses,
+        mlHits,
+        mlMisses
+      })
+    } catch (e) {
+      setMlPrediction({ error: `Failed to predict: ${e.message}` })
+    } finally {
+      setMlLoading(false)
     }
   }
 
@@ -192,43 +362,8 @@ const LatencyComparison = ({ nodes, testKey }) => {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-      {/* Read Lease Explanation Card */}
-      <div className="card" style={{ background: 'linear-gradient(135deg, rgba(0,240,255,0.05) 0%, rgba(0,255,157,0.05) 100%)' }}>
-        <div style={{ display: 'flex', alignItems: 'flex-start', gap: '1rem' }}>
-          <div style={{
-            background: 'rgba(0, 240, 255, 0.1)',
-            padding: '0.75rem',
-            borderRadius: '12px',
-            flexShrink: 0
-          }}>
-            <Info size={24} color="var(--accent-blue)" />
-          </div>
-          <div>
-            <h3 style={{ margin: '0 0 0.5rem 0', fontSize: '1.1rem', color: 'var(--accent-blue)' }}>
-              What are Read Leases?
-            </h3>
-            <p style={{ margin: '0 0 0.75rem 0', fontSize: '0.9rem', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-              Read leases allow followers to serve reads locally without contacting the leader,
-              dramatically reducing latency. The leader grants time-bound leases, and followers
-              can serve reads as long as their lease is valid.
-            </p>
-            <div style={{ display: 'flex', gap: '2rem', fontSize: '0.85rem' }}>
-              <div>
-                <div style={{ color: 'var(--error)', fontWeight: 'bold', marginBottom: '0.25rem' }}>Strong Read</div>
-                <div style={{ color: 'var(--text-secondary)' }}>Requires quorum confirmation</div>
-              </div>
-              <div>
-                <div style={{ color: 'var(--accent-green)', fontWeight: 'bold', marginBottom: '0.25rem' }}>Lease Read</div>
-                <div style={{ color: 'var(--text-secondary)' }}>Local read, no network hop</div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem' }}>
-        {/* Latency Benchmark Card */}
-        <div className="card">
+      {/* Latency Benchmark Card */}
+      <div className="card">
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem', borderBottom: '1px solid var(--border-color)', paddingBottom: '1rem' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
               <Clock size={20} color="var(--accent-purple)" />
@@ -330,13 +465,30 @@ const LatencyComparison = ({ nodes, testKey }) => {
                   <span style={{ fontFamily: 'monospace', fontSize: '1.25rem', fontWeight: 'bold' }}>{results.strong.avg.toFixed(1)}ms</span>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
-                  {renderLatencyBar(results.strong.avg, Math.max(results.strong.avg, results.lease.avg) * 1.2, 'var(--error)')}
+                  {renderLatencyBar(results.strong.avg, Math.max(results.strong.avg, results.lease.avg, results.eventual?.avg || 0) * 1.2, 'var(--error)')}
                 </div>
                 <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', display: 'flex', justifyContent: 'space-between' }}>
                   <span>Min: {results.strong.min.toFixed(1)}ms</span>
                   <span>Max: {results.strong.max.toFixed(1)}ms</span>
                 </div>
               </div>
+
+              {/* Eventual Read */}
+              {results.eventual && (
+                <div style={{ padding: '1rem', background: 'rgba(0, 240, 255, 0.1)', borderRadius: '8px', border: '1px solid rgba(0, 240, 255, 0.2)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                    <span style={{ fontWeight: 'bold', color: 'var(--accent-blue)' }}>Eventual Read</span>
+                    <span style={{ fontFamily: 'monospace', fontSize: '1.25rem', fontWeight: 'bold' }}>{results.eventual.avg.toFixed(1)}ms</span>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                    {renderLatencyBar(results.eventual.avg, Math.max(results.strong.avg, results.lease.avg, results.eventual.avg) * 1.2, 'var(--accent-blue)')}
+                  </div>
+                  <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', display: 'flex', justifyContent: 'space-between' }}>
+                    <span>Min: {results.eventual.min.toFixed(1)}ms</span>
+                    <span>Max: {results.eventual.max.toFixed(1)}ms</span>
+                  </div>
+                </div>
+              )}
 
               {/* Lease Read */}
               <div style={{ padding: '1rem', background: 'rgba(0, 255, 157, 0.1)', borderRadius: '8px', border: '1px solid rgba(0, 255, 157, 0.2)' }}>
@@ -345,7 +497,7 @@ const LatencyComparison = ({ nodes, testKey }) => {
                   <span style={{ fontFamily: 'monospace', fontSize: '1.25rem', fontWeight: 'bold' }}>{results.lease.avg.toFixed(1)}ms</span>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
-                  {renderLatencyBar(results.lease.avg, Math.max(results.strong.avg, results.lease.avg) * 1.2, 'var(--accent-green)')}
+                  {renderLatencyBar(results.lease.avg, Math.max(results.strong.avg, results.lease.avg, results.eventual?.avg || 0) * 1.2, 'var(--accent-green)')}
                 </div>
                 <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', display: 'flex', justifyContent: 'space-between' }}>
                   <span>Min: {results.lease.min.toFixed(1)}ms</span>
@@ -426,148 +578,181 @@ const LatencyComparison = ({ nodes, testKey }) => {
             </div>
           )}
         </div>
-      </div>
 
-      {/* ML Eviction Performance Impact */}
-      <div className="card" style={{ background: 'linear-gradient(135deg, rgba(138,43,226,0.05) 0%, rgba(0,240,255,0.05) 100%)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
-          <Brain size={20} color="var(--accent-purple)" />
-          <h3 style={{ margin: 0, fontSize: '1rem' }}>ML Eviction Performance Impact</h3>
-        </div>
-
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem' }}>
-          {/* Cache Hit Rate Comparison */}
-          <div style={{
-            background: 'rgba(0,0,0,0.2)',
-            borderRadius: '12px',
-            padding: '1.25rem',
-            border: '1px solid var(--border-color)'
-          }}>
-            <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '1rem' }}>
-              Cache Hit Rate (simulated workload)
-            </div>
-
-            {/* LRU Bar */}
-            <div style={{ marginBottom: '1rem' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.25rem' }}>
-                <span style={{ fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <Clock size={14} color="var(--warning)" /> LRU
-                </span>
-                <span style={{ fontWeight: 'bold', color: 'var(--warning)' }}>~72%</span>
-              </div>
-              <div style={{ height: '12px', background: 'var(--border-color)', borderRadius: '6px', overflow: 'hidden' }}>
-                <div style={{ height: '100%', width: '72%', background: 'var(--warning)', borderRadius: '6px' }} />
-              </div>
-            </div>
-
-            {/* ML Bar */}
-            <div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.25rem' }}>
-                <span style={{ fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <Brain size={14} color="var(--accent-purple)" /> ML-Based
-                </span>
-                <span style={{ fontWeight: 'bold', color: 'var(--accent-green)' }}>~89%</span>
-              </div>
-              <div style={{ height: '12px', background: 'var(--border-color)', borderRadius: '6px', overflow: 'hidden' }}>
-                <div style={{ height: '100%', width: '89%', background: 'linear-gradient(90deg, var(--accent-purple), var(--accent-green))', borderRadius: '6px' }} />
-              </div>
-            </div>
-
-            <div style={{
-              marginTop: '1rem',
-              padding: '0.75rem',
-              background: 'rgba(0, 255, 157, 0.1)',
-              borderRadius: '8px',
-              textAlign: 'center',
-              border: '1px solid rgba(0, 255, 157, 0.2)'
-            }}>
-              <span style={{ color: 'var(--accent-green)', fontWeight: 'bold', fontSize: '1.25rem' }}>+17%</span>
-              <span style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginLeft: '0.5rem' }}>hit rate improvement</span>
-            </div>
-          </div>
-
-          {/* Why It Matters */}
-          <div style={{
-            background: 'rgba(0,0,0,0.2)',
-            borderRadius: '12px',
-            padding: '1.25rem',
-            border: '1px solid var(--border-color)'
-          }}>
-            <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '1rem' }}>
-              Why ML Eviction Improves Performance
-            </div>
-
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-              <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.75rem' }}>
-                <CheckCircle size={16} color="var(--accent-green)" style={{ marginTop: '2px', flexShrink: 0 }} />
-                <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-                  <strong style={{ color: 'var(--text-primary)' }}>Fewer cache misses</strong> - Hot data stays in cache even if not accessed in the last few seconds
-                </div>
-              </div>
-
-              <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.75rem' }}>
-                <CheckCircle size={16} color="var(--accent-green)" style={{ marginTop: '2px', flexShrink: 0 }} />
-                <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-                  <strong style={{ color: 'var(--text-primary)' }}>Reduced backend load</strong> - Less re-fetching of frequently-used data from storage
-                </div>
-              </div>
-
-              <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.75rem' }}>
-                <CheckCircle size={16} color="var(--accent-green)" style={{ marginTop: '2px', flexShrink: 0 }} />
-                <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-                  <strong style={{ color: 'var(--text-primary)' }}>Lower latency</strong> - Cache hits are 10-100x faster than storage reads
-                </div>
-              </div>
-
-              <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.75rem' }}>
-                <CheckCircle size={16} color="var(--accent-green)" style={{ marginTop: '2px', flexShrink: 0 }} />
-                <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-                  <strong style={{ color: 'var(--text-primary)' }}>Smarter decisions</strong> - Considers frequency + recency + access patterns
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div style={{
-          marginTop: '1rem',
-          padding: '0.75rem 1rem',
-          background: 'rgba(138, 43, 226, 0.1)',
-          borderRadius: '8px',
-          border: '1px solid rgba(138, 43, 226, 0.2)',
-          fontSize: '0.85rem',
-          color: 'var(--text-secondary)'
-        }}>
-          <strong style={{ color: 'var(--accent-purple)' }}>Try it:</strong> Go to the "ML Eviction" tab to see a live demo comparing LRU vs ML eviction strategies.
-        </div>
-      </div>
-
-      {/* Performance Tips */}
+      {/* ML Eviction Predictor */}
       <div className="card">
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
-          <Zap size={20} color="var(--warning)" />
-          <h3 style={{ margin: 0, fontSize: '1rem' }}>Performance Characteristics</h3>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem', borderBottom: '1px solid var(--border-color)', paddingBottom: '1rem' }}>
+          <Brain size={20} color="var(--accent-purple)" />
+          <h2 style={{ margin: 0, fontSize: '1.1rem' }}>ML Eviction Predictor</h2>
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1rem' }}>
-          <div style={{ padding: '1rem', background: 'rgba(255,255,255,0.03)', borderRadius: '8px' }}>
-            <div style={{ color: 'var(--accent-blue)', fontWeight: 'bold', marginBottom: '0.5rem' }}>Reads</div>
-            <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-              Lease reads bypass the leader, serving from local state. Strong reads ensure linearizability through quorum.
-            </div>
-          </div>
-          <div style={{ padding: '1rem', background: 'rgba(255,255,255,0.03)', borderRadius: '8px' }}>
-            <div style={{ color: 'var(--accent-purple)', fontWeight: 'bold', marginBottom: '0.5rem' }}>Writes</div>
-            <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-              All writes go through the leader and require majority consensus before being committed.
-            </div>
-          </div>
-          <div style={{ padding: '1rem', background: 'rgba(255,255,255,0.03)', borderRadius: '8px' }}>
-            <div style={{ color: 'var(--accent-green)', fontWeight: 'bold', marginBottom: '0.5rem' }}>Throughput</div>
-            <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-              Lease reads scale horizontally - adding followers increases read throughput without leader bottleneck.
-            </div>
-          </div>
+
+        <div style={{ marginBottom: '1rem' }}>
+          <label style={{
+            display: 'block',
+            fontSize: '0.8rem',
+            color: 'var(--text-secondary)',
+            marginBottom: '0.5rem'
+          }}>
+            Cache Capacity:
+          </label>
+          <input
+            type="number"
+            min="1"
+            value={mlCapacity}
+            onChange={(e) => setMlCapacity(parseInt(e.target.value) || 1)}
+            style={{
+              width: '100%',
+              padding: '0.5rem 0.75rem',
+              background: 'rgba(255, 255, 255, 0.05)',
+              border: '1px solid var(--border-color)',
+              borderRadius: '6px',
+              color: 'var(--text-primary)',
+              fontSize: '0.9rem',
+              outline: 'none'
+            }}
+          />
         </div>
+
+        <button
+          className="btn"
+          onClick={predictEviction}
+          disabled={mlLoading || !leader}
+          style={{
+            width: '100%',
+            justifyContent: 'center',
+            marginBottom: '1rem',
+            background: 'linear-gradient(135deg, var(--accent-purple) 0%, var(--accent-blue) 100%)',
+            color: '#000',
+            fontWeight: 'bold'
+          }}
+        >
+          <Brain size={16} /> {mlLoading ? 'Predicting...' : 'Predict What to Evict'}
+        </button>
+
+        {mlPrediction && !mlPrediction.error && (
+          <div>
+            {/* Simulation Info */}
+            <div style={{
+              background: 'rgba(0, 240, 255, 0.1)',
+              borderRadius: '8px',
+              padding: '0.75rem',
+              marginBottom: '1rem',
+              border: '1px solid var(--accent-blue)',
+              fontSize: '0.85rem',
+              color: 'var(--text-secondary)',
+              textAlign: 'center'
+            }}>
+              Simulated {mlPrediction.workloadSize} cache accesses based on actual access patterns
+            </div>
+
+            {/* Hit Rate Comparison */}
+            <div style={{
+              background: 'rgba(0,0,0,0.2)',
+              borderRadius: '12px',
+              padding: '1.25rem',
+              marginBottom: '1rem',
+              border: '1px solid var(--border-color)'
+            }}>
+              <div style={{ fontSize: '0.9rem', fontWeight: 'bold', marginBottom: '1rem', color: 'var(--text-primary)' }}>
+                Cache Hit Rate Comparison
+              </div>
+
+              {/* LRU Bar */}
+              <div style={{ marginBottom: '1rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.25rem' }}>
+                  <span style={{ fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <Clock size={14} color="var(--warning)" /> LRU
+                  </span>
+                  <span style={{ fontWeight: 'bold', color: 'var(--warning)' }}>{mlPrediction.lruHitRate}%</span>
+                </div>
+                <div style={{ height: '12px', background: 'var(--border-color)', borderRadius: '6px', overflow: 'hidden' }}>
+                  <div style={{ height: '100%', width: `${mlPrediction.lruHitRate}%`, background: 'var(--warning)', borderRadius: '6px' }} />
+                </div>
+                <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>
+                  {mlPrediction.lruHits} hits, {mlPrediction.lruMisses} misses
+                </div>
+              </div>
+
+              {/* ML Bar */}
+              <div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.25rem' }}>
+                  <span style={{ fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <Brain size={14} color="var(--accent-purple)" /> ML-Based
+                  </span>
+                  <span style={{ fontWeight: 'bold', color: 'var(--accent-green)' }}>{mlPrediction.mlHitRate}%</span>
+                </div>
+                <div style={{ height: '12px', background: 'var(--border-color)', borderRadius: '6px', overflow: 'hidden' }}>
+                  <div style={{ height: '100%', width: `${mlPrediction.mlHitRate}%`, background: 'linear-gradient(90deg, var(--accent-purple), var(--accent-green))', borderRadius: '6px' }} />
+                </div>
+                <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>
+                  {mlPrediction.mlHits} hits, {mlPrediction.mlMisses} misses
+                </div>
+              </div>
+
+              {mlPrediction.improvement > 0 && (
+                <div style={{
+                  marginTop: '1rem',
+                  padding: '0.75rem',
+                  background: 'rgba(0, 255, 157, 0.1)',
+                  borderRadius: '8px',
+                  textAlign: 'center',
+                  border: '1px solid rgba(0, 255, 157, 0.2)'
+                }}>
+                  <span style={{ color: 'var(--accent-green)', fontWeight: 'bold', fontSize: '1.25rem' }}>+{mlPrediction.improvement}%</span>
+                  <span style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginLeft: '0.5rem' }}>hit rate improvement</span>
+                </div>
+              )}
+            </div>
+
+            {/* Eviction Comparison */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+              <div style={{
+                background: 'rgba(255, 184, 0, 0.1)',
+                borderRadius: '8px',
+                padding: '1rem',
+                border: '1px solid var(--warning)'
+              }}>
+                <div style={{ fontSize: '0.85rem', fontWeight: 'bold', marginBottom: '0.5rem', color: 'var(--warning)' }}>
+                  LRU Would Evict:
+                </div>
+                {mlPrediction.lruEvictions.map(key => (
+                  <div key={key} style={{ fontFamily: 'monospace', fontSize: '0.85rem', color: 'var(--text-primary)' }}>
+                    {key}
+                  </div>
+                ))}
+              </div>
+
+              <div style={{
+                background: 'rgba(138, 43, 226, 0.1)',
+                borderRadius: '8px',
+                padding: '1rem',
+                border: '1px solid var(--accent-purple)'
+              }}>
+                <div style={{ fontSize: '0.85rem', fontWeight: 'bold', marginBottom: '0.5rem', color: 'var(--accent-purple)' }}>
+                  ML Would Evict:
+                </div>
+                {mlPrediction.mlEvictions.map(key => (
+                  <div key={key} style={{ fontFamily: 'monospace', fontSize: '0.85rem', color: 'var(--text-primary)' }}>
+                    {key}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {mlPrediction && mlPrediction.error && (
+          <div style={{
+            padding: '1rem',
+            background: 'rgba(255, 77, 77, 0.1)',
+            border: '1px solid var(--error)',
+            borderRadius: '8px',
+            color: 'var(--error)',
+            fontSize: '0.9rem'
+          }}>
+            {mlPrediction.error}
+          </div>
+        )}
       </div>
     </div>
   )

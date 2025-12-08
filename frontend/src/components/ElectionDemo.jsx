@@ -96,22 +96,17 @@ const ElectionDemo = ({ nodes }) => {
     setCountdownValues(initialCountdowns)
 
     // Animate all countdowns
-    for (let i = totalSteps; i >= 0; i--) {
+    // Simulate time passing - all timers count down based on elapsed time
+    for (let i = 0; i <= totalSteps; i++) {
       const progress = i / totalSteps
+      const elapsedTime = Math.round(shortestTimeout * progress)
       const newCountdowns = {}
 
       nodes.forEach(node => {
         const nodeTimeout = timeouts[node.id]
-        // Calculate remaining time based on progress
-        // Shortest timeout should reach 0 when progress = 0
-        const relativeProgress = Math.max(0, progress - (1 - shortestTimeout / nodeTimeout))
-        const adjustedProgress = relativeProgress / (shortestTimeout / nodeTimeout)
-        newCountdowns[node.id] = Math.max(0, Math.round(nodeTimeout * adjustedProgress))
-      })
-
-      // Simpler approach: all count down proportionally, shortest hits 0 first
-      nodes.forEach(node => {
-        newCountdowns[node.id] = Math.round(timeouts[node.id] * progress)
+        // Each node's countdown = its timeout minus elapsed time
+        // Only the shortest timeout will reach 0
+        newCountdowns[node.id] = Math.max(0, nodeTimeout - elapsedTime)
       })
 
       setCountdownValues(newCountdowns)
@@ -172,6 +167,84 @@ const ElectionDemo = ({ nodes }) => {
   }
 
   const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms))
+
+  // Track previous node states for comparison
+  const [prevNodeStates, setPrevNodeStates] = useState({})
+  const [prevLeaderId, setPrevLeaderId] = useState(null)
+  const [prevMaxTerm, setPrevMaxTerm] = useState(0)
+
+  // Real-time cluster monitoring - track state changes, elections, etc.
+  useEffect(() => {
+    // Skip if in guided demo mode
+    if (demoMode === 'guided') return
+
+    const currentStates = {}
+    let currentLeader = null
+    let maxTerm = 0
+
+    nodes.forEach(node => {
+      const term = node.currentTerm || node.term || 0
+      const state = node.active ? node.state : 'DOWN'
+      currentStates[node.id] = { state, term, active: node.active }
+      
+      if (term > maxTerm) maxTerm = term
+      if (state === 'LEADER' && node.active) currentLeader = node.id
+    })
+
+    // Detect state changes
+    Object.keys(currentStates).forEach(nodeId => {
+      const prev = prevNodeStates[nodeId]
+      const curr = currentStates[nodeId]
+      
+      if (!prev) return // First run
+      
+      // Node went down
+      if (prev.active && !curr.active) {
+        const wasLeader = prev.state === 'LEADER'
+        addEvent(`${nodeId} went DOWN ${wasLeader ? '(was LEADER)' : ''}`, 'error')
+        if (wasLeader) {
+          addEvent(`Leader lost - election will start`, 'warning')
+        }
+      }
+      
+      // Node came back up
+      if (!prev.active && curr.active) {
+        addEvent(`${nodeId} is back UP (${curr.state})`, 'success')
+      }
+      
+      // State changed (while active)
+      if (prev.active && curr.active && prev.state !== curr.state) {
+        if (curr.state === 'CANDIDATE') {
+          addEvent(`${nodeId} → CANDIDATE (term ${curr.term})`, 'warning')
+        } else if (curr.state === 'LEADER') {
+          addEvent(`${nodeId} → LEADER (term ${curr.term})`, 'success')
+        } else if (curr.state === 'FOLLOWER' && prev.state === 'CANDIDATE') {
+          addEvent(`${nodeId} → FOLLOWER (lost election)`, 'info')
+        }
+      }
+      
+      // Term changed
+      if (prev.active && curr.active && prev.term !== curr.term) {
+        if (curr.term > prev.term) {
+          addEvent(`${nodeId} term: ${prev.term} → ${curr.term}`, 'info')
+        }
+      }
+    })
+
+    // Detect leader change
+    if (prevLeaderId && currentLeader && prevLeaderId !== currentLeader) {
+      addEvent(`Leadership changed: ${prevLeaderId} → ${currentLeader}`, 'success')
+    }
+
+    // Detect new term
+    if (maxTerm > prevMaxTerm && prevMaxTerm > 0) {
+      addEvent(`Cluster term increased: ${prevMaxTerm} → ${maxTerm}`, 'info')
+    }
+
+    setPrevNodeStates(currentStates)
+    setPrevLeaderId(currentLeader)
+    setPrevMaxTerm(maxTerm)
+  }, [nodes, demoMode])
 
   // Watch for new leader election (for manual kills)
   useEffect(() => {
@@ -630,7 +703,7 @@ const ElectionDemo = ({ nodes }) => {
 
   return (
     <div>
-      {/* Election Demo Card */}
+      {/* Main Demo Card */}
       <div className="card" style={{ background: 'linear-gradient(135deg, rgba(0,240,255,0.03) 0%, rgba(138,43,226,0.03) 100%)' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.5rem', borderBottom: '1px solid var(--border-color)', paddingBottom: '1rem' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -667,16 +740,9 @@ const ElectionDemo = ({ nodes }) => {
         {demoMode === 'running' && demoStep !== 'running' && (
           <div style={{
             textAlign: 'center',
-            padding: '1.5rem',
-            marginBottom: '1.5rem',
-            background: 'rgba(0, 240, 255, 0.05)',
-            borderRadius: '12px',
-            border: '2px dashed var(--accent-blue)'
+            padding: '1rem',
+            marginBottom: '1.5rem'
           }}>
-            <h3 style={{ margin: '0 0 0.75rem 0', color: 'var(--accent-blue)' }}>Learn How Raft Election Works</h3>
-            <p style={{ color: 'var(--text-secondary)', marginBottom: '1rem', fontSize: '0.9rem' }}>
-              Watch a step-by-step simulation of the leader election process
-            </p>
             <button
               onClick={startGuidedDemo}
               style={{
@@ -695,95 +761,10 @@ const ElectionDemo = ({ nodes }) => {
             >
               <PlayCircle size={20} /> Play Election Simulation
             </button>
-            <p style={{ color: 'var(--text-secondary)', marginTop: '0.75rem', fontSize: '0.8rem', opacity: 0.7 }}>
-              (This is a visualization only - won't affect the running cluster)
-            </p>
           </div>
         )}
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem' }}>
-          {/* Left: Election Info & Stats */}
-          <div>
-            <h3 style={{ margin: '0 0 1rem 0', fontSize: '1rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <Users size={16} /> Cluster Stats
-            </h3>
-
-            {/* Live Stats */}
-            <div style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(3, 1fr)',
-              gap: '0.75rem',
-              marginBottom: '1rem'
-            }}>
-              <div style={{
-                background: 'rgba(0, 255, 157, 0.1)',
-                padding: '0.75rem',
-                borderRadius: '8px',
-                textAlign: 'center'
-              }}>
-                <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: 'var(--accent-green)' }}>{activeNodes.length}</div>
-                <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Active</div>
-              </div>
-              <div style={{
-                background: 'rgba(255, 77, 77, 0.1)',
-                padding: '0.75rem',
-                borderRadius: '8px',
-                textAlign: 'center'
-              }}>
-                <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: 'var(--error)' }}>{downNodes.length}</div>
-                <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Down</div>
-              </div>
-              <div style={{
-                background: 'rgba(138, 43, 226, 0.1)',
-                padding: '0.75rem',
-                borderRadius: '8px',
-                textAlign: 'center'
-              }}>
-                <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: 'var(--accent-purple)' }}>
-                  {currentLeader?.currentTerm || currentLeader?.term || '-'}
-                </div>
-                <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Term</div>
-              </div>
-            </div>
-
-            {/* How It Works */}
-            <div style={{
-              padding: '1rem',
-              background: 'rgba(138, 43, 226, 0.05)',
-              border: '1px solid rgba(138, 43, 226, 0.2)',
-              borderRadius: '8px',
-              marginBottom: '1rem'
-            }}>
-              <div style={{ fontWeight: 'bold', fontSize: '0.9rem', marginBottom: '0.5rem', color: 'var(--accent-purple)' }}>
-                How Raft Election Works:
-              </div>
-              <ol style={{ margin: 0, paddingLeft: '1.25rem', color: 'var(--text-secondary)', fontSize: '0.8rem', lineHeight: 1.8 }}>
-                <li>Leader sends heartbeats every ~50ms</li>
-                <li>Follower times out after 150-300ms without heartbeat</li>
-                <li>Follower becomes <strong>Candidate</strong>, increments term</li>
-                <li>Candidate requests votes from other nodes</li>
-                <li>Majority vote = new <strong>Leader</strong></li>
-              </ol>
-            </div>
-
-            {/* Election Info Box */}
-            <div style={{
-              padding: '1rem',
-              background: 'rgba(0, 240, 255, 0.05)',
-              border: '1px solid rgba(0, 240, 255, 0.2)',
-              borderRadius: '8px'
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
-                <Clock size={14} color="var(--accent-blue)" />
-                <span style={{ fontWeight: 'bold', fontSize: '0.9rem' }}>Try It!</span>
-              </div>
-              <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-                Kill the <strong>LEADER</strong> node in the sidebar to trigger a real election and watch a new leader get elected automatically.
-              </div>
-            </div>
-          </div>
-
-        {/* Right: Event Log & Status */}
+        {/* Events & Status Section */}
         <div>
           <h3 style={{ margin: '0 0 1rem 0', fontSize: '1rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <Activity size={16} /> Election Events
@@ -908,11 +889,10 @@ const ElectionDemo = ({ nodes }) => {
               ))
             )}
           </div>
-
         </div>
       </div>
     </div>
-    </div>
+
   )
 }
 

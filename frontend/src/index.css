@@ -14,6 +14,10 @@
   --warning: #ffb800;
 }
 
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
 body {
   margin: 0;
   font-family: "Inter", system-ui, -apple-system, sans-serif;
@@ -284,8 +288,7 @@ body {
 /* Page Content - Full Width */
 .page-content-full {
   padding: 1.5rem 2rem;
-  max-width: 1600px;
-  margin: 0 auto;
+  width: 100%;
 }
 
 /* Cluster Status - Horizontal Layout */

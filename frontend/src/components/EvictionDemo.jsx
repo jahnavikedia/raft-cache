@@ -167,20 +167,6 @@ const EvictionDemo = ({ nodes }) => {
         )}
       </div>
 
-      {/* Explanation */}
-      <div style={{
-        background: 'rgba(138, 43, 226, 0.1)',
-        borderRadius: '12px',
-        padding: '1.25rem',
-        marginBottom: '1.5rem',
-        border: '1px solid rgba(138, 43, 226, 0.3)'
-      }}>
-        <p style={{ margin: 0, fontSize: '0.9rem', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-          <strong style={{ color: 'var(--accent-purple)' }}>The LRU Problem:</strong> LRU evicts based only on "least recently used".
-          A frequently-accessed key that hasn't been touched for a few seconds gets evicted over a rarely-used key that was just accessed.
-        </p>
-      </div>
-
       {/* Two Action Buttons */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1.5rem' }}>
         <button

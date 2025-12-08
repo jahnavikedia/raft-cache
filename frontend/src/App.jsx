@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { Database, Brain, Zap, Clock, Scale } from 'lucide-react'
 import Navbar from './components/Navbar'
 import ClusterStatus from './components/ClusterStatus'
-import LogViewer from './components/LogViewer'
+import ResizableLogPanel from './components/ResizableLogPanel'
 import Controls from './components/Controls'
 import CacheView from './components/CacheView'
 import LatencyComparison from './components/LatencyComparison'
@@ -51,48 +51,10 @@ function App() {
   const renderPage = () => {
     switch (activePage) {
       case 'election':
-        return (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-            <ElectionDemo nodes={nodes} />
-            <div>
-              <h2 style={{
-                fontSize: '1rem',
-                color: 'var(--text-secondary)',
-                marginBottom: '1rem',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.5rem',
-                textTransform: 'uppercase',
-                letterSpacing: '0.05em'
-              }}>
-                <Clock size={16} /> Raft Consensus Log
-              </h2>
-              <LogViewer logs={logs} />
-            </div>
-          </div>
-        )
+        return <ElectionDemo nodes={nodes} />
 
       case 'replication':
-        return (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-            <ReplicationDemo nodes={nodes} />
-            <div>
-              <h2 style={{
-                fontSize: '1rem',
-                color: 'var(--text-secondary)',
-                marginBottom: '1rem',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.5rem',
-                textTransform: 'uppercase',
-                letterSpacing: '0.05em'
-              }}>
-                <Clock size={16} /> Raft Consensus Log
-              </h2>
-              <LogViewer logs={logs} />
-            </div>
-          </div>
-        )
+        return <ReplicationDemo nodes={nodes} />
 
       case 'cache':
         return (
@@ -119,21 +81,7 @@ function App() {
               </div>
               <CacheView nodes={nodes} />
             </div>
-            <div>
-              <h2 style={{
-                fontSize: '1rem',
-                color: 'var(--text-secondary)',
-                marginBottom: '1rem',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.5rem',
-                textTransform: 'uppercase',
-                letterSpacing: '0.05em'
-              }}>
-                <Clock size={16} /> Raft Consensus Log
-              </h2>
-              <LogViewer logs={logs} />
-            </div>
+
           </div>
         )
 
@@ -197,9 +145,12 @@ function App() {
       <Navbar activePage={activePage} setActivePage={setActivePage} />
 
       {/* Page Content */}
-      <main className="page-content-full">
+      <main className="page-content-full" style={{ paddingBottom: '320px' }}>
         {renderPage()}
       </main>
+
+      {/* Sticky Log Panel */}
+      <ResizableLogPanel logs={logs} />
     </div>
   )
 }
