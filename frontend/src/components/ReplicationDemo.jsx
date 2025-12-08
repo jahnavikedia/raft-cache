@@ -189,7 +189,7 @@ const ReplicationDemo = ({ nodes }) => {
 
     // Use input values if provided, otherwise generate random
     const testKey = inputKey.trim() || `user-data-${Math.floor(Math.random() * 1000)}`
-    const testValue = inputValue.trim() || `{"name":"demo","timestamp":${Date.now()}}`
+    const testValue = inputValue.trim() || `{\"name\":\"demo\",\"timestamp\":${Date.now()}}`
 
     // Reset state
     setSlowDemoActive(true)
@@ -204,7 +204,7 @@ const ReplicationDemo = ({ nodes }) => {
     setSlowDemoValue(testValue)
 
     // Step 0: Initial state
-    addEvent('Starting slow replication demo...', 'info')
+    addEvent('Starting replication demo...', 'info')
     await sleep(1500)
 
     // Step 1: Client sends write request
@@ -217,37 +217,49 @@ const ReplicationDemo = ({ nodes }) => {
     addEvent('Step 2: Leader receives request and appends to local log', 'info')
     await sleep(1000)
     setLeaderHasEntry(true)
-    addEvent('Leader appended entry to log (uncommitted)', 'success')
-    await sleep(2000)
+    addEvent('✓ Leader appended entry to log (uncommitted)', 'success')
+    await sleep(1500)
 
-    // Step 3: Leader sends AppendEntries to follower 1
+    // Step 3: Leader sends AppendEntries to BOTH followers IN PARALLEL
     setSlowDemoStep(3)
-    setAnimatingArrow('follower1')
-    addEvent('Step 3: Leader sends AppendEntries RPC to node1...', 'info')
+    addEvent('Step 3: Leader sends AppendEntries RPC to ALL followers in parallel', 'info')
+    await sleep(500)
+    
+    // Show both arrows animating simultaneously
+    setAnimatingArrow('both')
+    addEvent('→ Sending to node1...', 'info')
+    addEvent('→ Sending to node2...', 'info')
     await sleep(2000)
+    
+    // Both followers receive and acknowledge
     setFollower1HasEntry(true)
-    addEvent('node1 acknowledged - entry replicated', 'success')
-    setAnimatingArrow(null)
-    await sleep(1500)
-
-    // Step 4: Leader sends AppendEntries to follower 2
-    setSlowDemoStep(4)
-    setAnimatingArrow('follower2')
-    addEvent('Step 4: Leader sends AppendEntries RPC to node2...', 'info')
-    await sleep(2000)
     setFollower2HasEntry(true)
-    addEvent('node2 acknowledged - entry replicated', 'success')
+    addEvent('✓ node1 acknowledged - entry replicated', 'success')
+    addEvent('✓ node2 acknowledged - entry replicated', 'success')
     setAnimatingArrow(null)
     await sleep(1500)
 
-    // Step 5: Majority reached - commit!
-    setSlowDemoStep(5)
-    addEvent('Step 5: MAJORITY REACHED (3/3 nodes have entry)', 'warning')
-    await sleep(1500)
-    setEntryCommitted(true)
-    addEvent('Entry COMMITTED! commitIndex advanced', 'success')
+    // Step 4: Count votes for commit
+    setSlowDemoStep(4)
+    addEvent('Step 4: Leader counts replication acknowledgments', 'warning')
     await sleep(1000)
-    addEvent('Entry applied to state machine on all nodes', 'success')
+    addEvent('Vote count: Leader (1/3) ✓', 'info')
+    await sleep(500)
+    addEvent('Vote count: node1 (2/3) ✓', 'info')
+    await sleep(500)
+    addEvent('Vote count: node2 (3/3) ✓', 'info')
+    await sleep(1000)
+    addEvent('MAJORITY REACHED! (3/3 ≥ 2 needed)', 'warning')
+    await sleep(1500)
+
+    // Step 5: Commit and apply
+    setSlowDemoStep(5)
+    setEntryCommitted(true)
+    addEvent('Step 5: Entry COMMITTED - commitIndex advanced', 'success')
+    await sleep(1000)
+    addEvent('→ Applying entry to state machine on all nodes', 'info')
+    await sleep(1000)
+    addEvent('✓ Entry applied to cache on all nodes', 'success')
     await sleep(2000)
 
     // Step 6: Actually write to the cluster
@@ -259,7 +271,7 @@ const ReplicationDemo = ({ nodes }) => {
         clientId: 'slow-demo',
         sequenceNumber: Date.now()
       })
-      addEvent('Real write completed! Check cache in cluster status above.', 'success')
+      addEvent('✓ Real write completed! Check cache in cluster status above.', 'success')
     } catch (e) {
       addEvent('Note: Simulated demo - actual write skipped', 'info')
     }

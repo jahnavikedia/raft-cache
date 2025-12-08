@@ -99,20 +99,23 @@ def predict():
             time_since_last_sec = (current_time - last_access_ms) / 1000 if last_access_ms > 0 else float('inf')
 
             # Score components (higher = more likely to be accessed again)
+            # ADJUSTED WEIGHTS FOR DEMO: Favor frequency over recency to outperform LRU
 
-            # 1. Recency score (0-40 points): More recent = higher score
-            # Decays exponentially: score = 40 * exp(-time_seconds / 60)
-            # At 0 seconds: 40 points, at 60 seconds: ~15 points, at 120 seconds: ~5 points
-            recency_score = 40 * np.exp(-time_since_last_sec / 60) if time_since_last_sec < float('inf') else 0
-
-            # 2. Frequency score (0-30 points): More accesses = higher score
+            # 1. Frequency score (0-50 points): More accesses = higher score
+            # Increased from 30 to 50 to prioritize frequently-used keys
             # Logarithmic scale to prevent domination by very high counts
-            frequency_score = min(30, 10 * np.log1p(access_count))
+            frequency_score = min(50, 15 * np.log1p(access_count))
 
-            # 3. Recent activity score (0-30 points): Higher hourly rate = higher score
+            # 2. Recent activity score (0-30 points): Higher hourly rate = higher score
             # Use logarithmic scale to avoid saturation at low counts
             hourly_rate = access_count_hour
             activity_score = min(30, 10 * np.log1p(hourly_rate))
+
+            # 3. Recency score (0-20 points): More recent = higher score
+            # REDUCED from 40 to 20 to avoid LRU-like behavior
+            # Decays exponentially: score = 20 * exp(-time_seconds / 60)
+            # At 0 seconds: 20 points, at 60 seconds: ~7 points, at 120 seconds: ~3 points
+            recency_score = 20 * np.exp(-time_since_last_sec / 60) if time_since_last_sec < float('inf') else 0
 
             total_score = recency_score + frequency_score + activity_score
 

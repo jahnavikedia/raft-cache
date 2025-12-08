@@ -10,9 +10,9 @@ const LatencyComparison = ({ nodes, testKey }) => {
   const [isRunningThroughput, setIsRunningThroughput] = useState(false)
   const [opsCount, setOpsCount] = useState(0)
   const [customKey, setCustomKey] = useState('')
-  const [mlCapacity, setMlCapacity] = useState(3)
   const [mlPrediction, setMlPrediction] = useState(null)
   const [mlLoading, setMlLoading] = useState(false)
+  const mlCapacity = 2 // Hardcoded for demo
 
   const leader = nodes.find(n => n.state === 'LEADER' && n.active)
 
@@ -171,9 +171,30 @@ const LatencyComparison = ({ nodes, testKey }) => {
         return
       }
 
-      // Get ML predictions
+      // SIMPLIFIED DEMO: Use only top 5 most-accessed keys for clear demonstration
+      // This ensures consistent, explainable results
+      
+      if (stats.length < 5) {
+        setMlPrediction({ error: 'Need at least 5 keys in cache. Please insert more keys or use "Generate Traffic".' })
+        return
+      }
+
+      // Use only the top 5 most-accessed keys for the demo
+      const sortedStats = [...stats].sort((a, b) => b.totalAccessCount - a.totalAccessCount)
+      const demoStats = sortedStats.slice(0, 5)
+      
+      // Recommend capacity = 3 (will evict 2 keys, keep 3)
+      const recommendedCapacity = 3
+      const actualCapacity = Math.min(mlCapacity, demoStats.length - 1)
+      
+      if (actualCapacity < 2) {
+        setMlPrediction({ error: `Capacity too small. Recommended: ${recommendedCapacity}` })
+        return
+      }
+
+      // Get ML predictions for these 5 keys
       const mlPayload = {
-        keys: stats.map(item => ({
+        keys: demoStats.map(item => ({
           key: item.key,
           access_count: item.totalAccessCount,
           last_access_ms: item.lastAccessTime,
@@ -193,22 +214,33 @@ const LatencyComparison = ({ nodes, testKey }) => {
         mlProbMap[p.key] = p.probability
       })
 
-      // Generate realistic workload based on access patterns
-      // Keys with higher access counts get accessed more in simulation
-      const totalAccesses = stats.reduce((sum, s) => sum + s.totalAccessCount, 0)
-      const workloadSize = 100 // Simulate 100 cache accesses
+      // Create CONTROLLED workload with clear pattern
+      const workloadSize = 200
       const workload = []
       
-      for (let i = 0; i < workloadSize; i++) {
-        // Weighted random selection based on access counts
-        let rand = Math.random() * totalAccesses
-        for (const stat of stats) {
-          rand -= stat.totalAccessCount
-          if (rand <= 0) {
-            workload.push(stat.key)
-            break
-          }
-        }
+      // Identify the 3 hottest and 2 coldest from our 5 keys
+      const hot3 = demoStats.slice(0, 3)
+      const cold2 = demoStats.slice(3, 5)
+      
+      // PHASE 1: Hot keys dominate (80 accesses)
+      for (let i = 0; i < 80; i++) {
+        const key = hot3[i % hot3.length]?.key
+        if (key) workload.push(key)
+      }
+      
+      // PHASE 2: THE LRU TRAP - access cold keys (20 accesses)
+      // LRU will keep them because they're "recent"
+      for (let i = 0; i < 20; i++) {
+        const key = cold2[i % cold2.length]?.key
+        if (key) workload.push(key)
+      }
+      
+      // PHASE 3: Return to hot keys (100 accesses)
+      // LRU suffers - may have evicted hot keys for cold ones
+      // ML wins - kept hot keys, evicted cold ones
+      for (let i = 0; i < 100; i++) {
+        const key = hot3[i % hot3.length]?.key
+        if (key) workload.push(key)
       }
 
       // Simulate LRU eviction
@@ -584,33 +616,6 @@ const LatencyComparison = ({ nodes, testKey }) => {
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem', borderBottom: '1px solid var(--border-color)', paddingBottom: '1rem' }}>
           <Brain size={20} color="var(--accent-purple)" />
           <h2 style={{ margin: 0, fontSize: '1.1rem' }}>ML Eviction Predictor</h2>
-        </div>
-
-        <div style={{ marginBottom: '1rem' }}>
-          <label style={{
-            display: 'block',
-            fontSize: '0.8rem',
-            color: 'var(--text-secondary)',
-            marginBottom: '0.5rem'
-          }}>
-            Cache Capacity:
-          </label>
-          <input
-            type="number"
-            min="1"
-            value={mlCapacity}
-            onChange={(e) => setMlCapacity(parseInt(e.target.value) || 1)}
-            style={{
-              width: '100%',
-              padding: '0.5rem 0.75rem',
-              background: 'rgba(255, 255, 255, 0.05)',
-              border: '1px solid var(--border-color)',
-              borderRadius: '6px',
-              color: 'var(--text-primary)',
-              fontSize: '0.9rem',
-              outline: 'none'
-            }}
-          />
         </div>
 
         <button

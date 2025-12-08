@@ -32,23 +32,23 @@ public class LeaderReplicator {
 
     private final Map<String, Long> nextIndex;
     private final Map<String, Long> matchIndex;
-    private final Map<String, Long> lastHeartbeatResponse;  // Track last successful response time
+    private final Map<String, Long> lastHeartbeatResponse; // Track last successful response time
 
     private ScheduledExecutorService replicationExecutor;
     private ScheduledFuture<?> replicationTask;
-    private Runnable leaseRenewalCallback;  // Callback to renew lease on majority heartbeat
+    private Runnable leaseRenewalCallback; // Callback to renew lease on majority heartbeat
 
     /**
      * Create a new LeaderReplicator
      *
-     * @param nodeId The leader's node ID
+     * @param nodeId      The leader's node ID
      * @param currentTerm The current term
-     * @param raftLog The Raft log
+     * @param raftLog     The Raft log
      * @param networkBase The network manager
-     * @param peers Map of peer IDs to addresses
+     * @param peers       Map of peer IDs to addresses
      */
     public LeaderReplicator(String nodeId, int currentTerm, RaftLog raftLog,
-                           NetworkBase networkBase, Map<String, String> peers) {
+            NetworkBase networkBase, Map<String, String> peers) {
         this.nodeId = nodeId;
         this.currentTerm = currentTerm;
         this.raftLog = raftLog;
@@ -91,8 +91,7 @@ public class LeaderReplicator {
                 this::replicateToAllFollowers,
                 0,
                 REPLICATION_INTERVAL_MS,
-                TimeUnit.MILLISECONDS
-        );
+                TimeUnit.MILLISECONDS);
     }
 
     /**
@@ -192,12 +191,18 @@ public class LeaderReplicator {
             // Try to advance commit index
             updateCommitIndex();
         } else {
-            // Log inconsistency - decrement nextIndex and retry
+            // Log inconsistency - use aggressive backtracking for faster catch-up
             long currentNextIndex = nextIndex.getOrDefault(followerId, 1L);
             if (currentNextIndex > 1) {
-                nextIndex.put(followerId, currentNextIndex - 1);
-                logger.debug("Follower {} rejected AppendEntries, decrementing nextIndex to {}",
-                        followerId, currentNextIndex - 1);
+                // IMPROVED: Use exponential backoff for faster catch-up
+                // If follower is far behind (e.g., just restarted), this helps catch up quickly
+                long decrement = Math.max(1, (currentNextIndex - 1) / 2);
+                long newNextIndex = Math.max(1, currentNextIndex - decrement);
+
+                nextIndex.put(followerId, newNextIndex);
+                logger.info(
+                        "Follower {} rejected AppendEntries, aggressively backtracking nextIndex from {} to {} (decrement={})",
+                        followerId, currentNextIndex, newNextIndex, decrement);
 
                 // Immediately retry with the decremented index
                 replicateToFollower(followerId);
