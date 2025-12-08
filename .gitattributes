@@ -8,6 +8,10 @@ scripts/* linguist-detectable=false
 *.lock linguist-generated
 package-lock.json linguist-generated
 dump.rdb binary
+*.pdf binary linguist-documentation
 
-# Ensure Java is detected
+# Ensure Java is the primary language
 *.java linguist-detectable=true
+src/**/*.java linguist-detectable=true
+src/main/java/**/*.java linguist-detectable=true
+src/test/java/**/*.java linguist-detectable=true
