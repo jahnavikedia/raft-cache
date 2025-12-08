@@ -21,6 +21,11 @@ const ReplicationDemo = ({ nodes }) => {
   const [entryCommitted, setEntryCommitted] = useState(false)
   const [animatingArrow, setAnimatingArrow] = useState(null)
 
+  // ACK and vote state
+  const [follower1Ack, setFollower1Ack] = useState(false)
+  const [follower2Ack, setFollower2Ack] = useState(false)
+  const [voteCount, setVoteCount] = useState(0)
+
   // Input fields for key-value
   const [inputKey, setInputKey] = useState('')
   const [inputValue, setInputValue] = useState('')
@@ -199,6 +204,9 @@ const ReplicationDemo = ({ nodes }) => {
     setFollower2HasEntry(false)
     setEntryCommitted(false)
     setAnimatingArrow(null)
+    setFollower1Ack(false)
+    setFollower2Ack(false)
+    setVoteCount(0)
     setEventLog([])
     setSlowDemoKey(testKey)
     setSlowDemoValue(testValue)
@@ -217,68 +225,88 @@ const ReplicationDemo = ({ nodes }) => {
     addEvent('Step 2: Leader receives request and appends to local log', 'info')
     await sleep(1000)
     setLeaderHasEntry(true)
+    setVoteCount(1)  // Leader counts as 1
     addEvent('✓ Leader appended entry to log (uncommitted)', 'success')
+    addEvent('Leader votes: 1/3', 'info')
     await sleep(1500)
 
     // Step 3: Leader sends AppendEntries to BOTH followers IN PARALLEL
     setSlowDemoStep(3)
-    addEvent('Step 3: Leader sends AppendEntries RPC to ALL followers in parallel', 'info')
+    addEvent('Step 3: Leader sends AppendEntries RPC to ALL followers in PARALLEL', 'warning')
     await sleep(500)
-    
-    // Show both arrows animating simultaneously
+
+    // Show both arrows animating simultaneously (PARALLEL)
     setAnimatingArrow('both')
-    addEvent('→ Sending to node1...', 'info')
-    addEvent('→ Sending to node2...', 'info')
-    await sleep(2000)
-    
-    // Both followers receive and acknowledge
+    addEvent('→ Sending AppendEntries to node2... (parallel)', 'info')
+    addEvent('→ Sending AppendEntries to node3... (parallel)', 'info')
+    await sleep(1500)
+
+    // Both followers receive entries simultaneously
     setFollower1HasEntry(true)
     setFollower2HasEntry(true)
-    addEvent('✓ node1 acknowledged - entry replicated', 'success')
-    addEvent('✓ node2 acknowledged - entry replicated', 'success')
+    addEvent('✓ node2 received entry', 'success')
+    addEvent('✓ node3 received entry', 'success')
+    await sleep(1000)
+
+    // Step 4: Followers send ACKs back (also in parallel)
+    setSlowDemoStep(4)
+    addEvent('Step 4: Followers send ACK responses back to Leader', 'warning')
+    setAnimatingArrow('ack')  // Reverse arrows for ACK
+    await sleep(1000)
+
+    // Follower 1 ACKs
+    setFollower1Ack(true)
+    setVoteCount(2)
+    addEvent('← ACK from node2: Entry appended successfully', 'success')
+    addEvent('Vote count: 2/3 (MAJORITY REACHED!)', 'warning')
+    await sleep(800)
+
+    // Follower 2 ACKs
+    setFollower2Ack(true)
+    setVoteCount(3)
+    addEvent('← ACK from node3: Entry appended successfully', 'success')
+    addEvent('Vote count: 3/3', 'info')
     setAnimatingArrow(null)
     await sleep(1500)
 
-    // Step 4: Count votes for commit
-    setSlowDemoStep(4)
-    addEvent('Step 4: Leader counts replication acknowledgments', 'warning')
+    // Step 5: Commit decision
+    setSlowDemoStep(5)
+    addEvent('Step 5: Leader decides to COMMIT (majority achieved)', 'warning')
     await sleep(1000)
-    addEvent('Vote count: Leader (1/3) ✓', 'info')
-    await sleep(500)
-    addEvent('Vote count: node1 (2/3) ✓', 'info')
-    await sleep(500)
-    addEvent('Vote count: node2 (3/3) ✓', 'info')
+    addEvent('Commit condition: votes (3) >= majority (2) ✓', 'success')
     await sleep(1000)
-    addEvent('MAJORITY REACHED! (3/3 ≥ 2 needed)', 'warning')
+    setEntryCommitted(true)
+    addEvent('✓ Entry COMMITTED - commitIndex advanced', 'success')
+    addEvent('→ Leader applies entry to state machine', 'info')
     await sleep(1500)
 
-    // Step 5: Commit and apply
-    setSlowDemoStep(5)
-    setEntryCommitted(true)
-    addEvent('Step 5: Entry COMMITTED - commitIndex advanced', 'success')
-    await sleep(1000)
-    addEvent('→ Applying entry to state machine on all nodes', 'info')
-    await sleep(1000)
-    addEvent('✓ Entry applied to cache on all nodes', 'success')
-    await sleep(2000)
-
-    // Step 6: Actually write to the cluster
+    // Step 6: Commit propagation to followers
     setSlowDemoStep(6)
-    addEvent('Step 6: Performing actual write to cluster...', 'info')
+    addEvent('Step 6: Leader notifies followers of commit via next heartbeat', 'info')
+    await sleep(1000)
+    addEvent('→ node2 applies committed entry to state machine', 'info')
+    addEvent('→ node3 applies committed entry to state machine', 'info')
+    await sleep(1000)
+    addEvent('✓ Entry applied to cache on ALL nodes', 'success')
+    await sleep(1500)
+
+    // Step 7: Actually write to the cluster
+    setSlowDemoStep(7)
+    addEvent('Step 7: Performing actual write to cluster...', 'info')
     try {
       await axios.post(`http://localhost:${leader.port}/cache/${testKey}`, {
         value: testValue,
         clientId: 'slow-demo',
         sequenceNumber: Date.now()
       })
-      addEvent('✓ Real write completed! Check cache in cluster status above.', 'success')
+      addEvent('✓ Real write completed! Check cache in cluster status.', 'success')
     } catch (e) {
       addEvent('Note: Simulated demo - actual write skipped', 'info')
     }
     await sleep(2000)
 
     // Done
-    setSlowDemoStep(7)
+    setSlowDemoStep(8)
     addEvent('Demo complete! Replication ensures data durability.', 'info')
   }
 
@@ -290,6 +318,9 @@ const ReplicationDemo = ({ nodes }) => {
     setFollower2HasEntry(false)
     setEntryCommitted(false)
     setAnimatingArrow(null)
+    setFollower1Ack(false)
+    setFollower2Ack(false)
+    setVoteCount(0)
     setSlowDemoKey('')
     setSlowDemoValue('')
     setEventLog([])
@@ -685,12 +716,12 @@ const ReplicationDemo = ({ nodes }) => {
 
           {/* Arrows to Followers with Heartbeats */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem', paddingTop: '10px' }}>
-            {/* Arrow/Heartbeat to Follower 1 */}
+            {/* Arrow/Heartbeat to Follower 1 (node2) */}
             <div style={{
               opacity: 1,
               transition: 'opacity 0.3s',
               position: 'relative',
-              width: '60px',
+              width: '80px',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center'
@@ -708,17 +739,43 @@ const ReplicationDemo = ({ nodes }) => {
                   }}
                 />
               )}
-              {/* Demo arrow */}
-              {slowDemoActive && slowDemoStep >= 3 ? (
+              {/* Demo arrows - Forward (AppendEntries) */}
+              {slowDemoActive && animatingArrow === 'both' && (
                 <ArrowRight
                   size={28}
-                  color={animatingArrow === 'follower1' ? 'var(--accent-green)' : 'var(--text-secondary)'}
+                  color="var(--accent-blue)"
                   style={{
-                    animation: animatingArrow === 'follower1' ? 'pulse 0.5s infinite' : 'none',
-                    transform: 'rotate(-20deg)'
+                    animation: 'pulse 0.5s infinite',
+                    transform: 'rotate(-20deg)',
+                    filter: 'drop-shadow(0 0 8px var(--accent-blue))'
                   }}
                 />
-              ) : (
+              )}
+              {/* Demo arrows - Backward (ACK) */}
+              {slowDemoActive && animatingArrow === 'ack' && !follower1Ack && (
+                <ArrowRight
+                  size={28}
+                  color="var(--accent-green)"
+                  style={{
+                    animation: 'pulse 0.5s infinite',
+                    transform: 'rotate(160deg)',
+                    filter: 'drop-shadow(0 0 8px var(--accent-green))'
+                  }}
+                />
+              )}
+              {/* Static arrow when not animating */}
+              {slowDemoActive && animatingArrow !== 'both' && animatingArrow !== 'ack' && slowDemoStep >= 3 && (
+                <ArrowRight
+                  size={24}
+                  color={follower1Ack ? 'var(--accent-green)' : 'var(--text-secondary)'}
+                  style={{
+                    transform: 'rotate(-20deg)',
+                    opacity: 0.6
+                  }}
+                />
+              )}
+              {/* Default state */}
+              {!slowDemoActive && (
                 <ArrowRight
                   size={24}
                   color={heartbeatToFollower1 ? 'var(--error)' : 'var(--text-secondary)'}
@@ -729,13 +786,26 @@ const ReplicationDemo = ({ nodes }) => {
                   }}
                 />
               )}
+              {/* ACK checkmark */}
+              {slowDemoActive && follower1Ack && (
+                <CheckCircle
+                  size={16}
+                  color="var(--accent-green)"
+                  style={{
+                    position: 'absolute',
+                    top: '-5px',
+                    right: '5px',
+                    filter: 'drop-shadow(0 0 4px var(--accent-green))'
+                  }}
+                />
+              )}
             </div>
-            {/* Arrow/Heartbeat to Follower 2 */}
+            {/* Arrow/Heartbeat to Follower 2 (node3) */}
             <div style={{
               opacity: 1,
               transition: 'opacity 0.3s',
               position: 'relative',
-              width: '60px',
+              width: '80px',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center'
@@ -753,17 +823,43 @@ const ReplicationDemo = ({ nodes }) => {
                   }}
                 />
               )}
-              {/* Demo arrow */}
-              {slowDemoActive && slowDemoStep >= 4 ? (
+              {/* Demo arrows - Forward (AppendEntries) */}
+              {slowDemoActive && animatingArrow === 'both' && (
                 <ArrowRight
                   size={28}
-                  color={animatingArrow === 'follower2' ? 'var(--accent-green)' : 'var(--text-secondary)'}
+                  color="var(--accent-blue)"
                   style={{
-                    animation: animatingArrow === 'follower2' ? 'pulse 0.5s infinite' : 'none',
-                    transform: 'rotate(20deg)'
+                    animation: 'pulse 0.5s infinite',
+                    transform: 'rotate(20deg)',
+                    filter: 'drop-shadow(0 0 8px var(--accent-blue))'
                   }}
                 />
-              ) : (
+              )}
+              {/* Demo arrows - Backward (ACK) */}
+              {slowDemoActive && animatingArrow === 'ack' && !follower2Ack && (
+                <ArrowRight
+                  size={28}
+                  color="var(--accent-green)"
+                  style={{
+                    animation: 'pulse 0.5s infinite',
+                    transform: 'rotate(-160deg)',
+                    filter: 'drop-shadow(0 0 8px var(--accent-green))'
+                  }}
+                />
+              )}
+              {/* Static arrow when not animating */}
+              {slowDemoActive && animatingArrow !== 'both' && animatingArrow !== 'ack' && slowDemoStep >= 3 && (
+                <ArrowRight
+                  size={24}
+                  color={follower2Ack ? 'var(--accent-green)' : 'var(--text-secondary)'}
+                  style={{
+                    transform: 'rotate(20deg)',
+                    opacity: 0.6
+                  }}
+                />
+              )}
+              {/* Default state */}
+              {!slowDemoActive && (
                 <ArrowRight
                   size={24}
                   color={heartbeatToFollower2 ? 'var(--error)' : 'var(--text-secondary)'}
@@ -771,6 +867,19 @@ const ReplicationDemo = ({ nodes }) => {
                     transform: 'rotate(20deg)',
                     opacity: heartbeatToFollower2 ? 1 : 0.4,
                     transition: 'all 0.2s'
+                  }}
+                />
+              )}
+              {/* ACK checkmark */}
+              {slowDemoActive && follower2Ack && (
+                <CheckCircle
+                  size={16}
+                  color="var(--accent-green)"
+                  style={{
+                    position: 'absolute',
+                    bottom: '-5px',
+                    right: '5px',
+                    filter: 'drop-shadow(0 0 4px var(--accent-green))'
                   }}
                 />
               )}
@@ -875,10 +984,53 @@ const ReplicationDemo = ({ nodes }) => {
           </div>
         </div>
 
+        {/* Vote Count Indicator */}
+        {slowDemoActive && voteCount > 0 && (
+          <div style={{
+            display: 'flex',
+            justifyContent: 'center',
+            alignItems: 'center',
+            gap: '1rem',
+            marginTop: '1rem',
+            padding: '0.75rem',
+            background: voteCount >= 2 ? 'rgba(0, 255, 157, 0.1)' : 'rgba(255, 184, 0, 0.1)',
+            border: `1px solid ${voteCount >= 2 ? 'var(--accent-green)' : 'var(--warning)'}`,
+            borderRadius: '8px'
+          }}>
+            <span style={{ fontSize: '0.9rem', color: 'var(--text-secondary)' }}>Votes:</span>
+            <div style={{ display: 'flex', gap: '0.5rem' }}>
+              {[1, 2, 3].map(v => (
+                <div key={v} style={{
+                  width: '24px',
+                  height: '24px',
+                  borderRadius: '50%',
+                  background: v <= voteCount ? 'var(--accent-green)' : 'rgba(255,255,255,0.1)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: '0.7rem',
+                  fontWeight: 'bold',
+                  color: v <= voteCount ? '#000' : 'var(--text-secondary)',
+                  transition: 'all 0.3s'
+                }}>
+                  {v <= voteCount ? '✓' : v}
+                </div>
+              ))}
+            </div>
+            <span style={{
+              fontSize: '0.85rem',
+              fontWeight: 'bold',
+              color: voteCount >= 2 ? 'var(--accent-green)' : 'var(--warning)'
+            }}>
+              {voteCount}/3 {voteCount >= 2 ? '(MAJORITY!)' : ''}
+            </span>
+          </div>
+        )}
+
         {/* Step Progress */}
         <div style={{ marginTop: '1rem' }}>
           <div style={{ display: 'flex', gap: '4px', marginBottom: '0.5rem' }}>
-            {[1, 2, 3, 4, 5, 6, 7].map(s => (
+            {[1, 2, 3, 4, 5, 6, 7, 8].map(s => (
               <div key={s} style={{
                 flex: 1,
                 height: '6px',
@@ -890,13 +1042,14 @@ const ReplicationDemo = ({ nodes }) => {
           </div>
           <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', textAlign: 'center' }}>
             {slowDemoStep === 0 ? 'Ready to start' :
-             slowDemoStep === 1 ? 'Step 1/7: Client sending request...' :
-             slowDemoStep === 2 ? 'Step 2/7: Leader appending to log...' :
-             slowDemoStep === 3 ? 'Step 3/7: Replicating to node1...' :
-             slowDemoStep === 4 ? 'Step 4/7: Replicating to node2...' :
-             slowDemoStep === 5 ? 'Step 5/7: Committing entry...' :
-             slowDemoStep === 6 ? 'Step 6/7: Writing to cluster...' :
-             'Step 7/7: Complete!'}
+             slowDemoStep === 1 ? 'Step 1/8: Client sending request...' :
+             slowDemoStep === 2 ? 'Step 2/8: Leader appending to log...' :
+             slowDemoStep === 3 ? 'Step 3/8: Sending AppendEntries (parallel)...' :
+             slowDemoStep === 4 ? 'Step 4/8: Receiving ACKs from followers...' :
+             slowDemoStep === 5 ? 'Step 5/8: Commit decision (majority reached)...' :
+             slowDemoStep === 6 ? 'Step 6/8: Propagating commit...' :
+             slowDemoStep === 7 ? 'Step 7/8: Writing to cluster...' :
+             'Step 8/8: Complete!'}
           </div>
         </div>
 
